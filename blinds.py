@@ -161,8 +161,7 @@ class Servo:
         return True
 
     def __repr__(self):
-        repr = "Motor {_id}: Pos: {_pos} V: {_v} I: {_i} L: {_l} U: {_u} T: {_t}"
-        return repr.format(**self.__dict__)
+        return f"Motor {self._id}: Pos: {self._pos} V: {self._v} I: {self._i} L: {self._l} U: {self._u} T: {self._t}"
 
 def get_pin_value(pin):
     with digitalio.DigitalInOut(pin) as input:
@@ -171,7 +170,7 @@ def get_pin_value(pin):
         return input.value
 
 async def poll_pin(pin, finish_event, callback):
-    print("Starting poller for %s..." % pin)
+    print(f"Starting poller for {pin}...")
     with digitalio.DigitalInOut(pin) as input:
         input.direction = digitalio.Direction.INPUT
         input.pull = digitalio.Pull.DOWN
@@ -186,12 +185,12 @@ async def poll_pin(pin, finish_event, callback):
             if finish_event.is_set():
                 break
             await asyncio.sleep(0)
-    print("Completed polling for pin %s." % pin)
+    print(f"Completed polling for pin {pin}.")
 
 async def count_revolutions(servo, finish_event, comparer, callback):
     old_position = 0
     revolutions = 0
-    print("Counting revolutions for servo %s..." % servo.id)
+    print(f"Counting revolutions for servo {servo.id}...")
     is_rotating = False
     stop_counter = 10
     while True:
@@ -218,10 +217,10 @@ async def count_revolutions(servo, finish_event, comparer, callback):
             break
 
         await asyncio.sleep(0)
-    print("Completed counting revolutions for servo %s." % servo.id)
+    print(f"Completed counting revolutions for servo {servo.id}.")
 
 async def wait(finish_event, timeout):
-    print("Waiting for %s seconds..." % timeout)
+    print(f"Waiting for {timeout} seconds...")
     try:
         await asyncio.sleep(timeout)
         print("Timeout reached.")
@@ -241,14 +240,11 @@ class Blinds:
         POSITION_MOVING_UP = 3
         POSITION_MOVING_DOWN = 4
 
-        def __init__(self, reader, update_callback, on_opening, on_opened, on_closing, on_closed, up_pin, down_pin, tilt_scale):
+        def __init__(self, reader, update_callback, on_opened, up_pin, down_pin, tilt_scale):
             self._position = Blinds.POSITION_DOWN
             self._reader = reader
             self._update_callback = update_callback
-            self._on_opening = on_opening
             self._on_opened = on_opened
-            self._on_closing = on_closing
-            self._on_closed = on_closed
             self._lift_servo = Servo(1, reader)
             self._tilt_servo = Servo(2, reader, scale=tilt_scale)
             self._down_pin = down_pin
@@ -268,10 +264,6 @@ class Blinds:
         def tilt(self):
             return self._tilt
 
-        @property
-        def is_moving(self):
-            return _lift_servo.is_moving()
-
         @tilt.setter
         def tilt(self, value):
             self._tilt = value
@@ -283,7 +275,7 @@ class Blinds:
             return self._opened
 
         async def drive_tilt(self, value):
-            print("Driving tilt servo to %s..." % value)
+            print(f"Driving tilt servo to {value}...")
             self._tilt_servo.enable_torque = True
             self._tilt_servo.position = value
             while self._tilt_servo.is_moving:
@@ -326,7 +318,7 @@ class Blinds:
             revs = max_revs
             fast_revs = revs - slow_revs
             def handle_count(count):
-                print("Revolution count = %s" % count)
+                print(f"Revolution count = {count}")
                 if count >= revs:
                     print("Max count reached, stopping...")
                     finish_event.set()
@@ -334,7 +326,7 @@ class Blinds:
                     print("Slowing down...")
                     try:
                         self._lift_servo.speed = slow_speed
-                    except ServoCommFailure:
+                    except ServoCommFailure as e:
                         print(f"Failed to slow servo down: {e}")
 
 
@@ -343,12 +335,12 @@ class Blinds:
                 try:
                     self._lift_servo.speed = 0
                 except ServoCommFailure as e:
-                    print("Failed to stop lift servo for reversing: {0}")
+                    print(f"Failed to stop lift servo for reversing: {e}")
 
                 try:
                     self._lift_servo.speed = -speed
                 except ServoCommFailure as e:
-                    print("Failed to start lift servo for reversing: {0}")
+                    print(f"Failed to start lift servo for reversing: {e}")
 
                 revs = max_revs # Reset revolution counter
 
@@ -397,7 +389,7 @@ class Blinds:
                     print(f"Failed to stop servo.")
                 self._lift_servo.enable_torque = False
             except Exception as e:
-                print("Exception occured while driving: %s" % repr(e))
+                print(f"Exception occurred while driving: {e!r}")
             finally:
                 finish_event.set()
                 wait_task.cancel()
@@ -406,7 +398,6 @@ class Blinds:
 
         async def close(self):
             print("Closing blinds...")
-            self._on_closing(self)
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
             await self.operate(self._down_pin,                              # Stop when down pin reached
@@ -420,12 +411,10 @@ class Blinds:
             await self.drive_tilt(self._tilt)
             self._position = Blinds.POSITION_DOWN
             self.report_state()
-            self._on_closed(self)
             print("Completed closing blinds.")
 
         async def open(self):
             print("Opening blinds...")
-            self._on_opening(self)
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()
             await self.operate(self._up_pin,                                # Stop if up pin reached
@@ -441,6 +430,17 @@ class Blinds:
             self._on_opened(self)
             self._opened += 1
             print("Completed opening blinds.")
+
+        async def stop(self):
+            print("Stopping blinds...")
+            try:
+                await self._lift_servo.stop()
+                self._lift_servo.enable_torque = False
+            except Exception as e:
+                print(f"Failed to stop lift servo: {e!r}")
+            self._position = Blinds.POSITION_STOPPED
+            self.report_state()
+            print("Blinds stopped.")
 
         def report_state(self):
             self._update_callback(self)
@@ -480,7 +480,7 @@ class Blinds:
             if False:
                 stored_position = self.get_stored_position()
                 if stored_position:
-                    print("Previous stored position = %s, moving there." % stored_position)
+                    print(f"Previous stored position = {stored_position}, moving there.")
                     self.target = stored_position
                 else:
                     print("No stored position, moving down.")

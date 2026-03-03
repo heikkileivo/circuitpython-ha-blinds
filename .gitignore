@@ -4,6 +4,10 @@ secrets.py
 boot_out.txt
 test_results.txt
 
+# Deploy
+devices.json
+backups/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

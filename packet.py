@@ -98,19 +98,19 @@ class Reader:
         self.next_header_received = False
 
     def output_settings(self, id):
-        print("Id: %s " % self.read_1_byte(id, Address.ID))
-        print("Baud rate: %s " % self.read_1_byte(id, Address.BAUD_RATE))
-        print("Min ang: %s " % self.read_2_bytes(id, Address.MIN_ANGLE_LIMIT_L))
-        print("Max ang: %s " % self.read_2_bytes(id, Address.MAX_ANGLE_LIMIT_L))
-        print("Enable torq: %s " % self.read_1_byte(id, Address.TORQUE_ENABLE))
-        print("Lock: %s " % self.read_1_byte(id, Address.LOCK))
-        print("Goal time: %s " % self.read_2_bytes(id, Address.GOAL_TIME_L))
+        print(f"Id: {self.read_1_byte(id, Address.ID)}")
+        print(f"Baud rate: {self.read_1_byte(id, Address.BAUD_RATE)}")
+        print(f"Min ang: {self.read_2_bytes(id, Address.MIN_ANGLE_LIMIT_L)}")
+        print(f"Max ang: {self.read_2_bytes(id, Address.MAX_ANGLE_LIMIT_L)}")
+        print(f"Enable torq: {self.read_1_byte(id, Address.TORQUE_ENABLE)}")
+        print(f"Lock: {self.read_1_byte(id, Address.LOCK)}")
+        print(f"Goal time: {self.read_2_bytes(id, Address.GOAL_TIME_L)}")
 
 
     def set_id(self, id, new_id):
         print("Unlocking eprom...")
         self.write_byte(id, Address.LOCK, 0)
-        print("Setting new id to %s..." % new_id)
+        print(f"Setting new id to {new_id}...")
         self.write_byte(id, Address.ID, new_id)
         print("Locking eprom...")
         self.write_byte(id, Address.LOCK, 1)
@@ -146,7 +146,7 @@ class Reader:
         checksum = (~sum(data) & 0xFF)
 
         data = [255, 255] + data + [checksum]
-        print("Data: %s" % data)
+        print(f"Data: {data}")
         self.uart.write(bytes(data))
 
     def read_byte(self, scs_id):

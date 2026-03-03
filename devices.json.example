@@ -1,0 +1,19 @@
+{
+  "devices": [
+    {
+      "name": "living-room-right",
+      "host": "192.168.1.128",
+      "password": "your-password-here"
+    },
+    {
+      "name": "living-room-left",
+      "host": "192.168.1.129",
+      "password": "your-password-here"
+    },
+    {
+      "name": "bedroom",
+      "host": "192.168.1.130",
+      "password": "your-password-here"
+    }
+  ]
+}
