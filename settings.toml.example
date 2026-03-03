@@ -1,0 +1,24 @@
+CIRCUITPY_WIFI_SSID = "your_wifi_ssid"
+CIRCUITPY_WIFI_PASSWORD = "your_wifi_password"
+CIRCUITPY_WEB_API_PASSWORD = "your_web_api_password"
+CIRCUITPY_WEB_API_PORT = 80
+CIRCUITPY_WEB_INSTANCE_NAME = "upstairs-living-room-right-blinds"
+
+close_approach_revs = 5
+open_approach_revs = 5
+open_approach_speed = 500
+close_approach_speed = 300
+
+mqtt_broker = "192.168.1.36"
+mqtt_port = 1883
+mqtt_user = "your_mqtt_user"
+mqtt_pwd = "your_mqtt_password"
+
+opened_counter_feed = "blinds/blind1/counters/opened"
+position_value_feed = "blinds/blind1/value"
+position_command_feed = "blinds/blind1/command"
+position_speed_feed = "blinds/blind1/speed"
+tilt_value_feed = "blinds/blind1/tilt/value"
+tilt_command_feed = "blinds/blind1/tilt/command"
+uptime_feed = "blinds/blind1/uptime"
+group_value_feed = "blinds/living_room/value"

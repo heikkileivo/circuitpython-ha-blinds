@@ -1,3 +1,9 @@
+# CircuitPython credentials and device-specific files
+settings.toml
+secrets.py
+boot_out.txt
+test_results.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
