@@ -85,11 +85,12 @@ async def measure_uptime(mqtt_client, on_connected, disc, blinds):
                     uptime_str = str(timedelta(seconds=uptime))
                     print(f"Publishing uptime {uptime_str}...")
                     mqtt_client.publish(disc.uptime_state_topic, uptime_str)
+                    mqtt_client.publish(disc.uptime_seconds_state_topic, str(int(uptime)))
                 except Exception as e:
                     print(f"Failed to publish uptime: {e!r}")
 
 
-async def status_blinker(blinds):
+async def status_blinker(blinds, status_led):
     colors = { Blinds.POSITION_DOWN: Color.BLUE,
                   Blinds.POSITION_UP: Color.YELLOW,
                   Blinds.POSITION_MOVING_DOWN: Color.BLUE,
@@ -97,15 +98,19 @@ async def status_blinker(blinds):
                   Blinds.POSITION_STOPPED: Color.CYAN,
                   Blinds.POSITION_UNKNOWN: Color.ORANGE}
     while True:
-        color = colors[blinds.position]
-        pixel[0] = color
-        await blink(color, 2, interval=0.15)
-        if blinds.is_moving:
-            await asyncio.sleep(0.25)
+        if status_led["enabled"]:
+            color = colors[blinds.position]
+            pixel[0] = color
+            await blink(color, 2, interval=0.15)
+            if blinds.is_moving:
+                await asyncio.sleep(0.25)
+            else:
+                await asyncio.sleep(1)
         else:
+            pixel[0] = Color.BLACK
             await asyncio.sleep(1)
 
-async def connect_mqtt(disc, blinds):
+async def connect_mqtt(disc, blinds, status_led):
     print("Setting up mqtt...")
     on_connected = asyncio.Event()
     pool = socketpool.SocketPool(wifi.radio)
@@ -126,6 +131,7 @@ async def connect_mqtt(disc, blinds):
         for topic in disc.command_topics():
             print(f"Subscribing to {topic}...")
             client.subscribe(topic)
+        client.publish(disc.status_led_state_topic, "ON" if status_led["enabled"] else "OFF")
 
     def disconnected(client, userdata, rc):
         print("Disconnected from mqtt broker.")
@@ -157,6 +163,9 @@ async def connect_mqtt(disc, blinds):
                 blinds.tilt = tilt
             except Exception as e:
                 print(f"Failed to parse tilt: {e!r}")
+        elif topic == disc.status_led_command_topic:
+            status_led["enabled"] = message == "ON"
+            client.publish(disc.status_led_state_topic, message)
 
     print("Setting callbacks..")
     mqtt_client.on_connect = connected
@@ -224,6 +233,7 @@ async def main():
     tilt_scale = os.getenv("tilt_scale", 10.0)
 
     disc = HADiscovery(device_name)
+    status_led = {"enabled": True}
 
     mqtt_client = None
     on_connected = None
@@ -258,12 +268,12 @@ async def main():
     blinds.find_out_current_state()
     await blink(Color.BLUE, 3)
     await connect_wifi()
-    mqtt_client, on_connected = await connect_mqtt(disc, blinds)
+    mqtt_client, on_connected = await connect_mqtt(disc, blinds, status_led)
     await blink(Color.GREEN, 3)
 
     tasks = []
     tasks.append(asyncio.create_task(poll_mqtt(mqtt_client, on_connected, blinds, 4)))
-    tasks.append(asyncio.create_task(status_blinker(blinds)))
+    tasks.append(asyncio.create_task(status_blinker(blinds, status_led)))
     tasks.append(asyncio.create_task(measure_uptime(mqtt_client, on_connected, disc, blinds)))
 
     await asyncio.gather(*tasks)
