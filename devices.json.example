@@ -1,18 +1,21 @@
 {
   "devices": [
     {
-      "name": "living-room-right",
+      "name": "living-room-right-blinds",
+      "type": "blinds",
       "host": "192.168.1.128",
       "password": "your-password-here"
     },
     {
-      "name": "living-room-left",
-      "host": "192.168.1.129",
+      "name": "electricity-meter",
+      "type": "electricity",
+      "host": "192.168.1.120",
       "password": "your-password-here"
     },
     {
-      "name": "bedroom",
-      "host": "192.168.1.130",
+      "name": "water-meter",
+      "type": "water",
+      "host": "192.168.1.232",
       "password": "your-password-here"
     }
   ]

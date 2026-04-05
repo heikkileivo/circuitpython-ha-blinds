@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Deploy CircuitPython code to blind-control devices."""
+"""Deploy CircuitPython code to HA devices.
+
+Deploys shared/*.py + devices/{type}/*.py to each device (flat, as CircuitPython requires).
+Device type is read from the "type" field in devices.json.
+"""
 
 import argparse
 import json
@@ -13,7 +17,8 @@ import requests
 SCRIPT_DIR = Path(__file__).parent
 DEVICES_FILE = SCRIPT_DIR / "devices.json"
 BACKUPS_DIR = SCRIPT_DIR / "backups"
-DEPLOY_FILES = ["code.py", "blinds.py", "packet.py", "tinys3.py", "discovery.py"]
+SHARED_DIR = SCRIPT_DIR / "shared"
+DEVICES_DIR = SCRIPT_DIR / "devices"
 TIMEOUT = 10
 
 
@@ -32,6 +37,26 @@ def get_device(devices, name):
     print(f"Error: device '{name}' not found in {DEVICES_FILE}")
     print(f"Available devices: {', '.join(d['name'] for d in devices)}")
     sys.exit(1)
+
+
+def get_deploy_files(device_type):
+    """Collect shared/*.py + devices/{type}/*.py files to deploy."""
+    files = {}
+
+    # Shared files
+    for py in sorted(SHARED_DIR.glob("*.py")):
+        files[py.name] = py
+
+    # Device-specific files (override shared if same name)
+    type_dir = DEVICES_DIR / device_type
+    if not type_dir.exists():
+        print(f"Error: device type directory not found: {type_dir}")
+        sys.exit(1)
+
+    for py in sorted(type_dir.glob("*.py")):
+        files[py.name] = py
+
+    return files
 
 
 def auth(device):
@@ -96,8 +121,13 @@ def backup_device(device):
 
 
 def deploy_device(device):
-    """Deploy local .py files to a device."""
-    print(f"\n[{device['name']}] ({device['host']})")
+    """Deploy shared + device-type files to a device."""
+    device_type = device.get("type")
+    if not device_type:
+        print(f"  Error: device '{device['name']}' has no 'type' field")
+        return False
+
+    print(f"\n[{device['name']}] type={device_type} ({device['host']})")
 
     print("  Checking connectivity...")
     if not check_reachable(device):
@@ -109,13 +139,10 @@ def deploy_device(device):
         print(f"  Backup failed: {e}")
         return False
 
-    print("  Uploading files...")
+    deploy_files = get_deploy_files(device_type)
+    print(f"  Uploading {len(deploy_files)} files...")
     all_ok = True
-    for filename in DEPLOY_FILES:
-        filepath = SCRIPT_DIR / filename
-        if not filepath.exists():
-            print(f"    {filename}: SKIPPED (not found locally)")
-            continue
+    for filename, filepath in sorted(deploy_files.items()):
         content = filepath.read_bytes()
         try:
             upload_file(device, filename, content)
@@ -180,7 +207,7 @@ def list_backups(device_name=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Deploy code to CircuitPython devices")
+    parser = argparse.ArgumentParser(description="Deploy code to CircuitPython HA devices")
     parser.add_argument("device", nargs="?", help="Target device name (default: all)")
     parser.add_argument("--restore", metavar="TIMESTAMP", help="Restore a backup by timestamp")
     parser.add_argument("--list-backups", action="store_true", help="List available backups")
