@@ -17,6 +17,20 @@ from discovery import HADiscovery
 import tinys3
 
 
+_TICKS_PERIOD = 1 << 29
+_TICKS_MAX = _TICKS_PERIOD - 1
+_TICKS_HALFPERIOD = _TICKS_PERIOD // 2
+
+
+def ticks_diff(t1, t2):
+    """Signed difference between two supervisor.ticks_ms() values, correctly
+    handling the 2**29 ms rollover. CircuitPython has no built-in ticks_diff,
+    and naive subtraction goes large-negative at the wrap."""
+    diff = (t1 - t2) & _TICKS_MAX
+    diff = ((diff + _TICKS_HALFPERIOD) & _TICKS_MAX) - _TICKS_HALFPERIOD
+    return diff
+
+
 class LoopState:
     def __init__(self):
         self.running = True
@@ -88,9 +102,8 @@ async def poll_pin(pin, state, counter, debounce_time):
         if debouncer.fell or debouncer.rose:
             counter.value += 1
             current_time = supervisor.ticks_ms()
-            timedelta = current_time - previous_time
+            timedelta = ticks_diff(current_time, previous_time)
             previous_time = current_time
-            # Ignore negative timedelta occuring on ticks overflow
             if counter.buffer and timedelta > 0:
                 counter.buffer.append(timedelta)
 
@@ -108,9 +121,7 @@ async def calculate_value(state, counter, disc):
     print(f"Entering value loop for {counter.name}")
     while state.running:
         current_time = supervisor.ticks_ms()
-        timedelta = current_time - previous_time
-        if timedelta < 0:
-            continue
+        timedelta = ticks_diff(current_time, previous_time)
         previous_time = current_time
         current_value = counter.value
         pulses = current_value - previous_value

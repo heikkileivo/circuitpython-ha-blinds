@@ -2,10 +2,8 @@
 
 import os, time
 import asyncio
-import supervisor
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
 from blink import blink, Color
-
 
 
 async def mqtt_publish(state, topic, value):
@@ -58,6 +56,12 @@ class Mqtt:
         self._on_connect_callback = on_connect_callback
         self._on_message_callback = on_message_callback
 
+        # Deferred post-connect work (discovery publish + subscribe). Set by the
+        # connect callback, run by the supervisor AFTER connect() returns - never
+        # inside the CONNACK handler, where a slow/failed publish or subscribe
+        # would trigger MiniMQTT's connect-retry loop.
+        self._pending_on_connect = False
+
     # ---------- internal helpers ----------
 
     def init(self):
@@ -90,7 +94,6 @@ class Mqtt:
             socket_timeout=1,
         )
 
-        on_connect_cb = self._on_connect_callback
         on_message_cb = self._on_message_callback
 
         # Callbacks are purely reactive: they update state, do not loop.
@@ -100,8 +103,10 @@ class Mqtt:
             self.on_disconnected.clear()
             self.on_connected.set()
             asyncio.create_task(blink(Color.GREEN, 3))
-            if on_connect_cb:
-                on_connect_cb(client)
+            # Defer the heavy on_connect work (discovery publish + subscribe).
+            # Running it here, inside connect()'s CONNACK handler, lets a slow or
+            # failed publish/subscribe abort the connect and loop forever.
+            self._pending_on_connect = True
 
         def _disconnected(client, userdata, rc):
             print("MQTT: disconnected (cb)")
@@ -188,11 +193,7 @@ class Mqtt:
             raise RuntimeError("MQTT not connected")
 
         try:
-            t0 = supervisor.ticks_ms()
             self.client.publish(topic, msg)
-            dt = supervisor.ticks_ms() - t0
-            if dt > 200:
-                print(f"SLOW PUBLISH: topic={topic} took {dt} ms")
             self.last_publish = time.monotonic()
         except Exception as e:
             self.last_error = e
@@ -206,6 +207,24 @@ class Mqtt:
         """Subscribe to an MQTT topic."""
         if self.client and self.client.is_connected():
             self.client.subscribe(topic)
+
+    def _run_pending_on_connect(self):
+        """Run the deferred discovery-publish + subscribe AFTER a successful
+        connect, outside connect()'s CONNACK handler. If it fails it stays
+        pending and retries on the next supervisor pass, rather than triggering
+        a reconnect loop."""
+        if not self._pending_on_connect:
+            return
+        if not (self.client and self.client.is_connected()):
+            return
+        if self._on_connect_callback:
+            try:
+                self._on_connect_callback(self.client)
+                self._pending_on_connect = False
+            except Exception as e:
+                print(f"on_connect work failed, will retry: {repr(e)}")
+        else:
+            self._pending_on_connect = False
 
     def disconnect(self):
         """
@@ -253,6 +272,7 @@ class Mqtt:
         failures = 0
 
         while self.running:
+            self._run_pending_on_connect()
             print("MQTT supervisor is alive.")
             now = time.monotonic()
             if failures >= MAX_FAILURES:
@@ -281,6 +301,7 @@ class Mqtt:
                         self.last_connect = now
                         self.last_publish = now
                         failures = 0
+                        self._run_pending_on_connect()
                     else:
                         failures += 1
                         await asyncio.sleep(RECONNECT_DELAY)
