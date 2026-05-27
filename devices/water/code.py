@@ -63,7 +63,6 @@ async def measure_uptime(state, disc):
                 await mqtt_publish(state, disc.topic("reconnects", "state"), state.mqtt.reconnects)
                 if rssi is not None:
                     await mqtt_publish(state, disc.topic("rssi", "state"), rssi)
-                await mqtt_publish(state, disc.topic("reset_reason", "state"), reset_reason)
         except Exception as e:
             print(f"Failed to publish uptime: {repr(e)}")
         await asyncio.sleep(10)
@@ -270,10 +269,6 @@ async def main():
         "device_class": "signal_strength",
         "unit_of_measurement": "dBm",
         "state_class": "measurement",
-        "entity_category": "diagnostic",
-    })
-    disc.add_component("reset_reason", "sensor", {
-        "name": "Reset reason",
         "entity_category": "diagnostic",
     })
     disc.add_component("status_led", "switch", {
