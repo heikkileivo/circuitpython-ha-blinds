@@ -44,11 +44,14 @@ class LoopState:
 
 async def measure_uptime(state, disc):
     start_time = time.time()
+    reset_reason = str(microcontroller.cpu.reset_reason).rsplit(".", 1)[-1]
+    print(f"Last reset reason: {reset_reason}")
     while state.running:
         try:
             t = time.time()
             uptime = t - start_time
             mem = gc.mem_free()
+            rssi = wifi.radio.ap_info.rssi if wifi.radio.ap_info else None
             uptime_str = str(timedelta(seconds=uptime))
             print(f"Publishing uptime {uptime_str}")
             if state.mqtt.on_connected.is_set():
@@ -56,6 +59,9 @@ async def measure_uptime(state, disc):
                 await mqtt_publish(state, disc.topic("uptime_seconds", "state"), int(uptime))
                 await mqtt_publish(state, disc.topic("memory", "state"), mem)
                 await mqtt_publish(state, disc.topic("reconnects", "state"), state.mqtt.reconnects)
+                if rssi is not None:
+                    await mqtt_publish(state, disc.topic("rssi", "state"), rssi)
+                await mqtt_publish(state, disc.topic("reset_reason", "state"), reset_reason)
         except Exception as e:
             print(f"Failed to publish uptime: {repr(e)}")
         await asyncio.sleep(10)
@@ -266,6 +272,17 @@ async def main():
         "name": "Reconnects",
         "entity_category": "diagnostic",
     })
+    disc.add_component("rssi", "sensor", {
+        "name": "WiFi RSSI",
+        "device_class": "signal_strength",
+        "unit_of_measurement": "dBm",
+        "state_class": "measurement",
+        "entity_category": "diagnostic",
+    })
+    disc.add_component("reset_reason", "sensor", {
+        "name": "Reset reason",
+        "entity_category": "diagnostic",
+    })
     disc.add_component("status_led", "switch", {
         "name": "Status LED",
         "command_topic": True,
@@ -299,7 +316,8 @@ async def main():
 
     async def on_connected():
         state.mqtt.init()
-        state.mqtt.start_supervisor()
+        if not state.mqtt.running:
+            state.mqtt.start_supervisor()
 
     microcontroller.watchdog.timeout = 60
     microcontroller.watchdog.mode = WatchDogMode.RESET

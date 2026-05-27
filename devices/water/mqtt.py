@@ -2,6 +2,7 @@
 
 import os, time
 import asyncio
+import supervisor
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
 from blink import blink, Color
 
@@ -85,6 +86,8 @@ class Mqtt:
             password=pwd,
             socket_pool=self.pool,
             ssl_context=self.ssl_context,
+            keep_alive=120,
+            socket_timeout=1,
         )
 
         on_connect_cb = self._on_connect_callback
@@ -185,7 +188,11 @@ class Mqtt:
             raise RuntimeError("MQTT not connected")
 
         try:
+            t0 = supervisor.ticks_ms()
             self.client.publish(topic, msg)
+            dt = supervisor.ticks_ms() - t0
+            if dt > 200:
+                print(f"SLOW PUBLISH: topic={topic} took {dt} ms")
             self.last_publish = time.monotonic()
         except Exception as e:
             self.last_error = e
@@ -239,7 +246,7 @@ class Mqtt:
         """
         Monitor MQTT connection health and reconnect as necessary.
         """
-        STALL_TIMEOUT = 60      # seconds without publish -> reconnect
+        STALL_TIMEOUT = 180     # seconds without publish -> reconnect
         RECONNECT_DELAY = 15     # seconds between retries
         MAX_FAILURES = 5       # max consecutive failures before backoff
 
