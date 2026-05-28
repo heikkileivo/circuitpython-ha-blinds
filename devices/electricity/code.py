@@ -29,6 +29,20 @@ except Exception as e:
     print(f"Failed to disable usb drive: {e}")
 
 
+_TICKS_PERIOD = 1 << 29
+_TICKS_MAX = _TICKS_PERIOD - 1
+_TICKS_HALFPERIOD = _TICKS_PERIOD // 2
+
+
+def ticks_diff(t1, t2):
+    """Signed difference between two supervisor.ticks_ms() values, correctly
+    handling the 2**29 ms rollover. CircuitPython has no built-in ticks_diff,
+    and naive subtraction goes large-negative at the wrap."""
+    diff = (t1 - t2) & _TICKS_MAX
+    diff = ((diff + _TICKS_HALFPERIOD) & _TICKS_MAX) - _TICKS_HALFPERIOD
+    return diff
+
+
 class LoopState:
     def __init__(self):
         self.running = True
@@ -44,11 +58,14 @@ class LoopState:
 
 async def measure_uptime(state, disc):
     start_time = time.time()
+    reset_reason = str(microcontroller.cpu.reset_reason).rsplit(".", 1)[-1]
+    print(f"Last reset reason: {reset_reason}")
     while state.running:
         try:
             t = time.time()
             uptime = t - start_time
             mem = gc.mem_free()
+            rssi = wifi.radio.ap_info.rssi if wifi.radio.ap_info else None
             uptime_str = str(timedelta(seconds=uptime))
             print(f"Publishing uptime {uptime_str}")
             if state.mqtt.on_connected.is_set():
@@ -56,6 +73,8 @@ async def measure_uptime(state, disc):
                 await mqtt_publish(state, disc.topic("uptime_seconds", "state"), int(uptime))
                 await mqtt_publish(state, disc.topic("memory", "state"), mem)
                 await mqtt_publish(state, disc.topic("reconnects", "state"), state.mqtt.reconnects)
+                if rssi is not None:
+                    await mqtt_publish(state, disc.topic("rssi", "state"), rssi)
         except Exception as e:
             print(f"Failed to publish uptime: {repr(e)}")
         await asyncio.sleep(10)
@@ -92,9 +111,9 @@ async def poll_pin(pin, state, counter, debounce_time=0):
         if debouncer.rose:
             counter.value += 1
             current_time = supervisor.ticks_ms()
-            timedelta = current_time - previous_time
+            timedelta = ticks_diff(current_time, previous_time)
             previous_time = current_time
-            if counter.buffer:
+            if counter.buffer and timedelta > 0:
                 counter.buffer.append(timedelta)
         await asyncio.sleep(0)
     print(f"Exiting poller for {counter.name}")
@@ -110,7 +129,7 @@ async def calculate_value(state, counter, disc):
     print(f"Entering value loop for {counter.name}")
     while state.running:
         current_time = supervisor.ticks_ms()
-        timedelta = current_time - previous_time
+        timedelta = ticks_diff(current_time, previous_time)
         previous_time = current_time
         current_value = counter.value
         pulses = current_value - previous_value
@@ -161,8 +180,6 @@ async def calculate_value(state, counter, disc):
             if state.mqtt.on_connected.is_set():
                 await mqtt_publish(state, disc.topic("power", "state"), power)
                 await mqtt_publish(state, disc.topic("energy_total", "state"), total_units)
-                await mqtt_publish(state, disc.topic("pulses", "state"), pulses_per_s)
-                await mqtt_publish(state, disc.topic("interval", "state"), avg_timedelta)
             else:
                 print("Unable to send counter values: mqtt not connected.")
             pixel[0] = Color.BLACK
@@ -236,16 +253,6 @@ async def main():
         "unit_of_measurement": "kWh",
         "state_class": "total_increasing",
     })
-    disc.add_component("pulses", "sensor", {
-        "name": "Pulses",
-        "unit_of_measurement": "pulses/s",
-        "entity_category": "diagnostic",
-    })
-    disc.add_component("interval", "sensor", {
-        "name": "Interval",
-        "unit_of_measurement": "ms",
-        "entity_category": "diagnostic",
-    })
     disc.add_component("uptime", "sensor", {
         "name": "Uptime",
         "entity_category": "diagnostic",
@@ -264,6 +271,13 @@ async def main():
     })
     disc.add_component("reconnects", "sensor", {
         "name": "Reconnects",
+        "entity_category": "diagnostic",
+    })
+    disc.add_component("rssi", "sensor", {
+        "name": "WiFi RSSI",
+        "device_class": "signal_strength",
+        "unit_of_measurement": "dBm",
+        "state_class": "measurement",
         "entity_category": "diagnostic",
     })
     disc.add_component("status_led", "switch", {
@@ -299,7 +313,8 @@ async def main():
 
     async def on_connected():
         state.mqtt.init()
-        state.mqtt.start_supervisor()
+        if not state.mqtt.running:
+            state.mqtt.start_supervisor()
 
     microcontroller.watchdog.timeout = 60
     microcontroller.watchdog.mode = WatchDogMode.RESET

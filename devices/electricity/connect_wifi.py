@@ -18,7 +18,7 @@ async def wifi_supervisor(state,
 
     while state.running:
         print("WIFI supervisor is alive.")
-        try:    
+        try:
             if wifi.radio.connected:
                 print("Wifi is connected.")
                 last_ok = time.monotonic()
@@ -62,7 +62,7 @@ async def connect_wifi():
     try:
         for network in wifi.radio.start_scanning_networks():
             print(f"\t{network.ssid}\t\tRSSI: {network.rssi:d}\tChannel: {network.channel:d}")
-        
+
         wifi.radio.stop_scanning_networks()
         wifi.radio.connect(ssid, pwd)
         print("Connected to wifi.")
