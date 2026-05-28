@@ -1,25 +1,25 @@
 import time, gc, os, ssl
-import digitalio
 import board
 import supervisor
+import analogio
 import wifi, socketpool
 import asyncio
 import microcontroller
 from watchdog import WatchDogMode
-import time
 from adafruit_datetime import timedelta
-from adafruit_debouncer import Debouncer
-from ringbuffer import RingBuffer
 from blink import blink, Color, pixel
 from mqtt import Mqtt, mqtt_publish
 from connect_wifi import wifi_supervisor
 from discovery import HADiscovery
+from schmitt import AdaptiveSchmitt
 import tinys3
 
 
 _TICKS_PERIOD = 1 << 29
 _TICKS_MAX = _TICKS_PERIOD - 1
 _TICKS_HALFPERIOD = _TICKS_PERIOD // 2
+
+FULL_SCALE = 65535  # analogio.AnalogIn.value is always scaled to 16-bit
 
 
 def ticks_diff(t1, t2):
@@ -78,123 +78,99 @@ async def status_blinker(state):
             await asyncio.sleep(1)
 
 
-class Counter:
-    def __init__(self):
-        self.value = 0
-        self.buffer = None
-        self.pulses_per_unit = 1
-        self.name = "Counter"
-        self.interval = 60
-        self.total_value_multiplier = 1
-
-
-async def poll_pin(pin, state, counter, debounce_time):
-    input = digitalio.DigitalInOut(pin)
-    input.direction = digitalio.Direction.INPUT
-    input.pull = digitalio.Pull.UP
-    debouncer = Debouncer(input, debounce_time)
-    previous_time = 0
-    print(f"Entering poller for {counter.name}")
+async def sample_adc(pin, state, schmitt, sub_window_ms, sample_ms, oversample, name):
+    """Sample the analog optical pickup and feed the adaptive Schmitt. The
+    Schmitt produces two flips per bright/dark vane cycle (both edges), so
+    schmitt.flips matches the old digital both-edge pulse count and
+    pulses_per_unit calibration carries over."""
+    adc = analogio.AnalogIn(pin)
+    sample_interval = sample_ms / 1000
+    win_t = supervisor.ticks_ms()
+    print(f"Entering sampler for {name}  (sub_window={sub_window_ms}ms  sample={sample_ms}ms  oversample={oversample})")
     while state.running:
-        debouncer.update()
-        # Count both edges for better resolution
-        if debouncer.fell or debouncer.rose:
-            counter.value += 1
-            current_time = supervisor.ticks_ms()
-            timedelta = ticks_diff(current_time, previous_time)
-            previous_time = current_time
-            if counter.buffer and timedelta > 0:
-                counter.buffer.append(timedelta)
+        # Oversample to tame the ESP32-S3 ADC noise.
+        total = 0
+        for _ in range(oversample):
+            total += adc.value
+        schmitt.feed(total // oversample)
 
-        await asyncio.sleep(0.001)
+        if ticks_diff(supervisor.ticks_ms(), win_t) >= sub_window_ms:
+            schmitt.close_window()
+            win_t = supervisor.ticks_ms()
 
-    print(f"Exiting poller for {counter.name}")
+        await asyncio.sleep(sample_interval)
+    print(f"Exiting sampler for {name}")
 
 
-async def calculate_value(state, counter, disc):
-    previous_value = counter.value
-    previous_time = 0
-    std_dev = 0
+async def calculate_value(state, schmitt, disc, pulses_per_unit, interval, name):
+    """Publish flow rate, totaliser and a signal-swing diagnostic on each
+    interval. Flips never run backwards, so the delta is always >= 0; the
+    swing diagnostic surfaces optical health (real flow ~6-8% of FS, parked
+    <=2.5%)."""
+    prev_flips = 0
     total_units = 0
-
-    print(f"Entering value loop for {counter.name}")
+    print(f"Entering value loop for {name}")
     while state.running:
-        current_time = supervisor.ticks_ms()
-        timedelta = ticks_diff(current_time, previous_time)
-        previous_time = current_time
-        current_value = counter.value
-        pulses = current_value - previous_value
-        previous_value = current_value
+        t0 = supervisor.ticks_ms()
+        current_flips = schmitt.flips
+        delta = current_flips - prev_flips
+        prev_flips = current_flips
 
-        std_dev = counter.buffer.std_dev
-        pulses_per_s = 0
+        units_per_min = (delta / interval) * 60 / pulses_per_unit
+        total_units += delta / pulses_per_unit
+        swing_pct = schmitt.swing * 100.0 / FULL_SCALE
 
-        if pulses >= 0:
-            avg_timedelta = timedelta
-            avg_timedelta_s = avg_timedelta / 1000
+        print(f"flips: +{delta} ({current_flips} total)  flow: {units_per_min:.2f} L/min  total: {total_units:.2f} L")
+        print(f"swing: {swing_pct:.1f}%  gated: {schmitt.gated}  base: {schmitt.baseline}")
 
-            pulses_per_s = 0
-            if avg_timedelta_s:
-                pulses_per_s = pulses / avg_timedelta_s
-
-            pulses_per_min = pulses_per_s * 60
-            units_per_min = pulses_per_min / counter.pulses_per_unit
-            total_value_increment = pulses / counter.pulses_per_unit
-            total_units += total_value_increment
-
-            print(f"Total pulses: {counter.value}")
-            print(f"Pulses measured: {pulses}")
-            print(f"Pulses / min: {pulses_per_min}")
-            print(f"Units / min : {units_per_min}")
-            print(f"Total units : {total_units}")
-            print(f"Message time : {state.msg_time} s")
-            print(f"Uptime time : {state.uptime_time} s")
-            print(f"Dev : {std_dev}")
-
-        # Send a new message
         pixel[0] = Color.BLUE
-        print(f"Sending {counter.name} values...")
         try:
             if state.mqtt.on_connected.is_set():
                 await mqtt_publish(state, disc.topic("flow_rate", "state"), units_per_min)
                 await mqtt_publish(state, disc.topic("water_total", "state"), total_units)
-                await mqtt_publish(state, disc.topic("std_dev", "state"), std_dev)
+                await mqtt_publish(state, disc.topic("swing", "state"), swing_pct)
+                pixel[0] = Color.BLACK
             else:
-                print("Unable to send counter values: mqtt not connected.")
-
-            pixel[0] = Color.BLACK
+                print("Unable to send values: mqtt not connected.")
         except Exception as e:
-            print(f"Failed to send values for {counter.name}: {repr(e)}.")
-
+            print(f"Failed to send values for {name}: {repr(e)}.")
         pixel[0] = Color.BLACK
-        print(f"{counter.name} values sent.")
 
-        end_time = supervisor.ticks_ms()
-        time_elapsed = end_time - current_time
-        state.msg_time = time_elapsed / 1000
+        state.msg_time = ticks_diff(supervisor.ticks_ms(), t0) / 1000
         microcontroller.watchdog.feed()
-        await asyncio.sleep(counter.interval)
-
-    print(f"Exiting value loop for {counter.name}")
+        await asyncio.sleep(interval)
+    print(f"Exiting value loop for {name}")
 
 
 def create_tasks(state, disc,
                  on_connection_ok,
                  on_disconnected,
                  on_connected):
+    name = os.getenv("counter_name", "water")
+    pulses_per_unit = os.getenv("pulses_per_unit", 81)
+    interval = os.getenv("report_interval", 60)
+    pin = eval(os.getenv("sensor_pin", "board.D1"))
+
+    env_ms = int(os.getenv("env_ms", 4500))
+    sub_window_ms = int(os.getenv("sub_window_ms", 250))
+    sample_ms = int(os.getenv("sample_ms", 2))
+    oversample = int(os.getenv("oversample", 4))
+    min_swing_pct = float(os.getenv("min_swing_pct", 3.5))
+    hyst_pct = float(os.getenv("hyst_pct", 1.5))
+
+    env_windows = max(1, env_ms // sub_window_ms)
+    min_swing = int(min_swing_pct / 100 * FULL_SCALE)
+    hyst = int(hyst_pct / 100 * FULL_SCALE)
+    schmitt = AdaptiveSchmitt(env_windows, min_swing, hyst, FULL_SCALE)
+
+    print(f"Schmitt: env={env_ms}ms ({env_windows} windows)  min_swing={min_swing} ({min_swing_pct}%)  hyst={hyst} ({hyst_pct}%)")
+    print(f"Calibration: pulses_per_unit={pulses_per_unit}  report_interval={interval}s")
+
     tasks = []
-
-    counter = Counter()
-    counter.name = os.getenv("counter_name")
-    counter.pulses_per_unit = os.getenv("pulses_per_unit")
-    counter.interval = os.getenv("report_interval")
-    counter.buffer = RingBuffer(os.getenv("ring_buffer_length"))
-    counter.total_value_multiplier = os.getenv("total_value_multiplier")
-
-    pin = eval(os.getenv("sensor_pin"))
-    debounce_time = os.getenv("debounce_time_ms") / 1000
-    tasks.append(asyncio.create_task(poll_pin(pin, state, counter, debounce_time=debounce_time)))
-    tasks.append(asyncio.create_task(calculate_value(state, counter, disc)))
+    tasks.append(asyncio.create_task(sample_adc(pin, state, schmitt, sub_window_ms,
+                                                 sample_ms, oversample, name)))
+    tasks.append(asyncio.create_task(calculate_value(state, schmitt, disc,
+                                                      pulses_per_unit, interval, name)))
     tasks.append(asyncio.create_task(measure_uptime(state, disc)))
     tasks.append(asyncio.create_task(status_blinker(state)))
     tasks.append(asyncio.create_task(wifi_supervisor(state,
@@ -238,11 +214,12 @@ async def main():
         "unit_of_measurement": "L",
         "state_class": "total_increasing",
     })
-    disc.add_component("std_dev", "sensor", {
-        "name": "Std dev",
+    disc.add_component("swing", "sensor", {
+        "name": "Signal swing",
         "entity_category": "diagnostic",
         "state_class": "measurement",
-        "unit_of_measurement": "ms",
+        "unit_of_measurement": "%",
+        "suggested_display_precision": 1,
     })
     disc.add_component("uptime", "sensor", {
         "name": "Uptime",

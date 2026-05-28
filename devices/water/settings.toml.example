@@ -6,12 +6,18 @@ CIRCUITPY_WEB_INSTANCE_NAME = "water-meter"
 
 device_name = "Water Meter"
 counter_name = "water"
-sensor_pin = "board.D2"
-pulses_per_unit = 1
+sensor_pin = "board.D1"              # ANALOG output from the optical pickup
+pulses_per_unit = 81                  # calibrated against known volumes (both edges per vane)
 report_interval = 60
-ring_buffer_length = 30
-debounce_time_ms = 10
-total_value_multiplier = 1
+
+# Adaptive Schmitt parameters (see devices/water/schmitt.py); defaults are
+# the validated values, override only if needed.
+min_swing_pct = 3.5                   # gate floor: parked dither <=2.5%, flow ~6-8%
+hyst_pct = 1.5                        # Schmitt hysteresis around the envelope midpoint
+env_ms = 4500                         # rolling envelope window (>= 1 rotation period)
+sub_window_ms = 250
+sample_ms = 2
+oversample = 4
 
 mqtt_broker = "192.168.1.36"
 mqtt_port = 1883
