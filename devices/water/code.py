@@ -155,8 +155,8 @@ def create_tasks(state, disc,
     sub_window_ms = int(os.getenv("sub_window_ms", 250))
     sample_ms = int(os.getenv("sample_ms", 2))
     oversample = int(os.getenv("oversample", 4))
-    min_swing_pct = float(os.getenv("min_swing_pct", 3.5))
-    hyst_pct = float(os.getenv("hyst_pct", 1.5))
+    min_swing_pct = float(os.getenv("min_swing_pct", 1.5))
+    hyst_pct = float(os.getenv("hyst_pct", 1.0))
 
     env_windows = max(1, env_ms // sub_window_ms)
     min_swing = int(min_swing_pct / 100 * FULL_SCALE)

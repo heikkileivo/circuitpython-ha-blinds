@@ -10,10 +10,12 @@ sensor_pin = "board.D1"              # ANALOG output from the optical pickup
 pulses_per_unit = 81                  # calibrated against known volumes (both edges per vane)
 report_interval = 60
 
-# Adaptive Schmitt parameters (see devices/water/schmitt.py); defaults are
-# the validated values, override only if needed.
-min_swing_pct = 3.5                   # gate floor: parked dither <=2.5%, flow ~6-8%
-hyst_pct = 1.5                        # Schmitt hysteresis around the envelope midpoint
+# Adaptive Schmitt parameters (see devices/water/schmitt.py); defaults in
+# code.py are the validated values, override only if needed.
+# NOTE: CircuitPython settings.toml only accepts strings and integers, NOT
+# float literals -- quote percent values as strings if you set them here.
+min_swing_pct = "1.5"                 # gate floor: parked ~0.5%, flow ~2.5% (sensor LED painted out)
+hyst_pct = "1.0"                      # Schmitt hysteresis around the envelope midpoint
 env_ms = 4500                         # rolling envelope window (>= 1 rotation period)
 sub_window_ms = 250
 sample_ms = 2
