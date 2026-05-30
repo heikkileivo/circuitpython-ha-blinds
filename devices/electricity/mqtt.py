@@ -11,7 +11,7 @@ async def mqtt_publish(state, topic, value):
     Serialized publish wrapper used by all tasks.
     Uses Mqtt.publish() under a lock and updates last_publish on success.
     """
-    async with state.mqtt_lock:
+    async with state.mqtt.lock:
         try:
             # We trust the supervisor to keep MQTT reasonably healthy.
             state.mqtt.publish(topic, value)
@@ -90,7 +90,7 @@ class Mqtt:
             password=pwd,
             socket_pool=self.pool,
             ssl_context=self.ssl_context,
-            keep_alive=120,
+            keep_alive=60,
             socket_timeout=1,
         )
 
@@ -264,53 +264,49 @@ class Mqtt:
     async def mqtt_supervisor(self):
         """
         Monitor MQTT connection health and reconnect as necessary.
-        """
-        STALL_TIMEOUT = 180     # seconds without publish -> reconnect
-        RECONNECT_DELAY = 15     # seconds between retries
-        MAX_FAILURES = 5       # max consecutive failures before backoff
 
-        failures = 0
+        No active PINGREQ probe: adafruit_minimqtt's ping() runs a blocking
+        read loop for up to keep_alive seconds waiting for PINGRESP, and since
+        nothing here calls client.loop(), on a half-dead socket that wait
+        freezes the whole asyncio loop (sampling stops, the watchdog goes
+        unfed). Instead the regular ~10s uptime publishes keep the broker
+        keep-alive fresh; a dead socket then surfaces as a publish error that
+        sets on_disconnected, and we rebuild the client. STALL_TIMEOUT is the
+        backstop for a broker that goes away without sending us anything.
+        """
+        STALL_TIMEOUT = 90       # seconds without a successful publish -> rebuild
+        RECONNECT_DELAY = 15     # seconds between connect attempts
 
         while self.running:
             self._run_pending_on_connect()
-            print("MQTT supervisor is alive.")
             now = time.monotonic()
-            if failures >= MAX_FAILURES:
-                print("MQTT supervisor: too many failures, reconnecting...")
-                failures = 0
-                self.disconnect()
 
-            if self.last_publish + STALL_TIMEOUT < now:
-                print("MQTT supervisor: publish stall detected, reconnecting...")
-                self.last_publish = now
-                self.disconnect()
-                failures = 0
+            stall = self.client and (self.last_publish + STALL_TIMEOUT < now)
+            if self.client and (self.on_disconnected.is_set() or stall):
+                reason = "disconnect flagged" if self.on_disconnected.is_set() else "publish stall"
+                print(f"MQTT supervisor: {reason}, rebuilding client.")
+                async with self.lock:
+                    self.disconnect()
 
-            if self.client:
-                try:
-                    self.client.ping()
-                    print(f"MQTT supervisor: ping successful. Last publish = { self.last_publish}")
-                except Exception as e:
-                    print("MQTT supervisor: ping failed:", e)
-                    failures += 1
-            else:
-                print("MQTT supervisor: initializing MQTT client.")
+            if not self.client:
+                print("MQTT supervisor: connecting MQTT client.")
                 self.init()
                 try:
-                    if await self.connect():
+                    async with self.lock:
+                        connected = await self.connect()
+                    if connected:
                         self.last_connect = now
                         self.last_publish = now
-                        failures = 0
                         self._run_pending_on_connect()
                     else:
-                        failures += 1
                         await asyncio.sleep(RECONNECT_DELAY)
                         continue
-
                 except Exception as e:
                     print("MQTT supervisor: connecting failed:", e)
-                    failures += 1
+                    await asyncio.sleep(RECONNECT_DELAY)
                     continue
-            # Everything fine, chill a bit
+            else:
+                print(f"MQTT supervisor: alive. Last publish = {self.last_publish}")
+
             await asyncio.sleep(10)
         print("MQTT Supervisor is stopped.")

@@ -38,7 +38,6 @@ class LoopState:
         self.last_publish = 0
         self.last_connect = 0
         self.reconnects = 0
-        self.mqtt_lock = asyncio.Lock()
         self.msg_time = 0
         self.uptime_time = 0
         self.status_led = True
