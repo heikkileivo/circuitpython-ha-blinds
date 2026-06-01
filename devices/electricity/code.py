@@ -271,6 +271,7 @@ async def main():
     disc.add_component("reconnects", "sensor", {
         "name": "Reconnects",
         "entity_category": "diagnostic",
+        "state_class": "measurement",
     })
     disc.add_component("rssi", "sensor", {
         "name": "WiFi RSSI",
@@ -279,28 +280,15 @@ async def main():
         "state_class": "measurement",
         "entity_category": "diagnostic",
     })
-    disc.add_component("status_led", "switch", {
-        "name": "Status LED",
-        "command_topic": True,
-        "entity_category": "config",
-    })
-
     state = LoopState()
 
     def on_connect(client):
+        # Publish the retained discovery payload. No command topics, so there
+        # is nothing to subscribe to: on_connect stays non-blocking.
         print("Publishing discovery payload...")
         client.publish(disc.discovery_topic, disc.discovery_payload_json(), retain=True)
-        for topic in disc.command_topics():
-            print(f"Subscribing to {topic}...")
-            state.mqtt.subscribe(topic)
-        state.mqtt.publish(disc.topic("status_led", "state"), "ON" if state.status_led else "OFF")
 
-    def on_message(client, topic, message):
-        if topic == disc.topic("status_led", "set"):
-            state.status_led = message == "ON"
-            state.mqtt.publish(disc.topic("status_led", "state"), message)
-
-    state.mqtt = Mqtt(on_connect_callback=on_connect, on_message_callback=on_message)
+    state.mqtt = Mqtt(on_connect_callback=on_connect)
 
     async def on_connection_ok():
         if state.mqtt.running == False:
