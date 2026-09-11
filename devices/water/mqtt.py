@@ -2,7 +2,7 @@
 
 import os, time
 import asyncio
-import adafruit_minimqtt.adafruit_minimqtt as MQTT
+from bounded_mqtt import BoundedMQTT
 from blink import blink, Color
 
 
@@ -83,7 +83,7 @@ class Mqtt:
         user = os.getenv("mqtt_user")
         pwd = os.getenv("mqtt_pwd")
 
-        self.client = MQTT.MQTT(
+        self.client = BoundedMQTT(
             broker=broker,
             port=port,
             username=user,
