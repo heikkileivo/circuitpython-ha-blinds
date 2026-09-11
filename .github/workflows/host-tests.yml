@@ -1,0 +1,25 @@
+# Runs the host tests (stdlib unittest, see tests/__init__.py) on every push
+# and pull request. It installs nothing beyond Python itself and needs no
+# secrets: nothing is deployed, and devices.json stays out of CI.
+name: Host tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run host tests
+        run: python3 -m unittest -v
