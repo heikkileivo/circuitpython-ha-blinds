@@ -6,7 +6,7 @@ import board, digitalio, busio
 import tinys3
 import supervisor
 import wifi, socketpool
-import adafruit_minimqtt.adafruit_minimqtt as MQTT
+from bounded_mqtt import BoundedMQTT
 import asyncio
 import keypad
 import time
@@ -95,7 +95,7 @@ async def connect_mqtt(disc, blinds, status_led):
     print("Setting up mqtt...")
     on_connected = asyncio.Event()
     pool = socketpool.SocketPool(wifi.radio)
-    mqtt_client = MQTT.MQTT(
+    mqtt_client = BoundedMQTT(
         broker=os.getenv("mqtt_broker"),
         port=os.getenv("mqtt_port"),
         username=os.getenv("mqtt_user"),
