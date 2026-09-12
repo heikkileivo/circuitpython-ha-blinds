@@ -6,8 +6,12 @@ import adafruit_connection_manager
 from bounded_mqtt import BoundedMQTT
 from blink import blink, Color
 
-# A loop() call that takes longer than this, in seconds, is logged as SLOW LOOP.
-SLOW_LOOP_S = 1
+# A loop(T) call lasts T to T + socket_timeout. One that takes longer than
+# that by more than this, in seconds, is logged as SLOW LOOP.
+SLOW_LOOP_MARGIN_S = 0.5
+
+# The supervisor sleeps this long, in seconds, between its blocking steps.
+YIELD_S = 0.1
 
 
 async def mqtt_publish(state, topic, value):
@@ -41,18 +45,24 @@ class Mqtt:
 
     def __init__(self, on_connect_callback=None, on_message_callback=None,
                  client_id=None, socket_timeout=1, recv_timeout=10,
-                 echo_topic=None, echo_timeout=45):
+                 connect_retries=5, echo_topic=None, echo_timeout=45,
+                 paused=None):
         """
         Everything after the callbacks is opt-in; the defaults are what the
         meters have always used.
 
         - client_id: a fixed MQTT client ID. None lets MiniMQTT pick a random one.
         - socket_timeout, recv_timeout: passed to MiniMQTT, in seconds.
+        - connect_retries: attempts per connect(), passed to MiniMQTT. Past
+          the first, MiniMQTT sleeps 2, 4, 8 and 16 s between attempts after
+          MQTT-level errors, and that sleep blocks the asyncio loop.
         - echo_topic: a topic the device publishes to itself, not retained.
           The supervisor subscribes to it on every connect and rebuilds the
-          client when nothing has arrived on it for echo_timeout seconds.
-          Messages only arrive through loop(), so a device that sets it must
-          call loop() regularly.
+          client when loop() has run for echo_timeout seconds with nothing
+          arriving on it. Messages only arrive through loop(), so a device
+          that sets it must call loop() regularly.
+        - paused: a callable. While it returns True, the supervisor neither
+          rebuilds nor connects, because both block the asyncio loop.
         """
         self.running = False
         self.last_connect = 0
@@ -79,12 +89,16 @@ class Mqtt:
         self._client_id = client_id
         self._socket_timeout = socket_timeout
         self._recv_timeout = recv_timeout
+        self._connect_retries = connect_retries
+        self._paused = paused
 
         # Liveness echo. last_echo is the time.monotonic() of the last echo
-        # received, across rebuilds; None until the first one.
+        # received, across rebuilds; None until the first one. last_loop is
+        # the time.monotonic() at which the last loop() call ended.
         self._echo_topic = echo_topic
         self._echo_timeout = echo_timeout
         self.last_echo = None
+        self.last_loop = 0
 
         # Deferred post-connect work (discovery publish + subscribe). Set by the
         # connect callback, run by the supervisor AFTER connect() returns - never
@@ -126,6 +140,7 @@ class Mqtt:
             keep_alive=60,
             socket_timeout=self._socket_timeout,
             recv_timeout=self._recv_timeout,
+            connect_retries=self._connect_retries,
         )
 
         on_message_cb = self._on_message_callback
@@ -186,18 +201,23 @@ class Mqtt:
             print(f"MQTT: closing sockets failed: {repr(e)}")
         self.client = None
 
-    def _echo_lost(self, now):
+    def _echo_lost(self):
         """
-        True when an echo topic is set and nothing has arrived on it for
-        echo_timeout seconds, counted from the last echo or the last connect,
-        whichever is later.
+        True when an echo topic is set and loop() has run for echo_timeout
+        seconds with nothing arriving on it, counted from the last echo or the
+        last connect, whichever is later.
+
+        It's measured up to the end of the last loop() call, not up to now.
+        Echoes only arrive through loop(), so while the device doesn't call it
+        (the blinds while moving), a quiet echo topic says nothing about the
+        link.
         """
         if not self._echo_topic:
             return False
         since = self.last_connect
         if self.last_echo is not None and self.last_echo > since:
             since = self.last_echo
-        return since + self._echo_timeout < now
+        return since + self._echo_timeout < self.last_loop
 
     # ---------- public API used by supervisor / tasks ----------
 
@@ -242,7 +262,7 @@ class Mqtt:
             self.on_disconnected.set()
             return False
 
-    def publish(self, topic, msg):
+    def publish(self, topic, msg, retain=False):
         """
         Single publish attempt.
 
@@ -258,7 +278,7 @@ class Mqtt:
             raise RuntimeError("MQTT not connected")
 
         try:
-            self.client.publish(topic, msg)
+            self.client.publish(topic, msg, retain=retain)
             self.last_publish = time.monotonic()
         except Exception as e:
             self.last_error = e
@@ -283,6 +303,7 @@ class Mqtt:
             start = time.monotonic_ns()
             try:
                 self.client.loop(timeout)
+                self.last_loop = time.monotonic()
                 return True
             except Exception as e:
                 self.last_error = e
@@ -292,7 +313,7 @@ class Mqtt:
                 return False
             finally:
                 elapsed = (time.monotonic_ns() - start) / 1_000_000_000
-                if elapsed > SLOW_LOOP_S:
+                if elapsed > timeout + self._socket_timeout + SLOW_LOOP_MARGIN_S:
                     print(f"MQTT: SLOW LOOP {elapsed:.2f} s")
 
     def subscribe(self, topic):
@@ -368,11 +389,16 @@ class Mqtt:
         RECONNECT_DELAY = 15     # seconds between connect attempts
 
         while self.running:
+            if self._paused and self._paused():
+                # Rebuilding, connecting and the on-connect work all block.
+                await asyncio.sleep(1)
+                continue
+
             self._run_pending_on_connect()
             now = time.monotonic()
 
             stall = self.client and (self.last_publish + STALL_TIMEOUT < now)
-            echo_lost = self.client and self._echo_lost(now)
+            echo_lost = self.client and self._echo_lost()
             if self.client and (self.on_disconnected.is_set() or stall or echo_lost):
                 if self.on_disconnected.is_set():
                     reason = "disconnect flagged"
@@ -383,6 +409,12 @@ class Mqtt:
                 print(f"MQTT supervisor: {reason}, rebuilding client.")
                 async with self.lock:
                     self.disconnect()
+                # Rebuilding, connecting and the on-connect work each block.
+                # Yield between them, so a device that feeds its watchdog from
+                # a task only has to fit each one, not all three, in the timeout.
+                # A short sleep, not sleep(0), lets tasks that are already due
+                # run first.
+                await asyncio.sleep(YIELD_S)
 
             if not self.client:
                 print("MQTT supervisor: connecting MQTT client.")
@@ -395,6 +427,7 @@ class Mqtt:
                         # eat into the echo timeout.
                         self.last_connect = time.monotonic()
                         self.last_publish = now
+                        await asyncio.sleep(YIELD_S)
                         self._run_pending_on_connect()
                     else:
                         await asyncio.sleep(RECONNECT_DELAY)
