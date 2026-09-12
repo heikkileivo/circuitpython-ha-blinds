@@ -2,7 +2,13 @@ import json
 
 
 class HADiscovery:
-    def __init__(self, device_name, device_model, device_id_prefix, mac=None):
+    def __init__(self, device_name, device_model, device_id_prefix, mac=None,
+                 availability=False):
+        """
+        availability: when True, the payload carries one availability_topic
+        at the device root, shared by every component, with HA's default
+        online/offline payloads. The device must then publish those to it.
+        """
         if mac is None:
             # Imported here so host tests, which pass a MAC, run on CPython.
             import wifi
@@ -10,11 +16,17 @@ class HADiscovery:
         self._device_id = device_id_prefix + "_" + "".join(f"{b:02x}" for b in mac)
         self._device_name = device_name
         self._device_model = device_model
+        self._availability_topic = f"{self._device_id}/availability" if availability else None
         self._components = {}
 
     @property
     def device_id(self):
         return self._device_id
+
+    @property
+    def availability_topic(self):
+        """The root availability topic, or None without availability."""
+        return self._availability_topic
 
     def topic(self, entity, suffix):
         return f"{self._device_id}/{entity}/{suffix}"
@@ -70,4 +82,6 @@ class HADiscovery:
             },
             "cmps": self._components,
         }
+        if self._availability_topic:
+            payload["availability_topic"] = self._availability_topic
         return json.dumps(payload, separators=(",", ":"))

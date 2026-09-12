@@ -1,3 +1,14 @@
+from discovery import HADiscovery
+
+
+def blinds_discovery(device_name, mac=None):
+    """The blinds' HADiscovery, with root availability and every component."""
+    disc = HADiscovery(device_name, "CircuitPython Blinds", "blinds", mac=mac,
+                       availability=True)
+    add_components(disc)
+    return disc
+
+
 def add_components(disc):
     """Add the blinds' Home Assistant components to an HADiscovery."""
     disc.add_component("cover", "cover", {

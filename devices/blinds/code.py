@@ -12,8 +12,7 @@ import time
 from adafruit_debouncer import Debouncer
 from blinds import Blinds
 from packet import Packet, Reader
-from discovery import HADiscovery
-from components import add_components
+from components import blinds_discovery
 from blink import blink, Color, pixel
 from mqtt import Mqtt
 import storage
@@ -27,6 +26,14 @@ except Exception as e:
 # for its timeout to twice that (0.25-0.5 s by default), so while the blind is
 # idle a call starts about every 0.5 s.
 MQTT_SERVICE_SLEEP_S = 0.25
+
+# The cover state HA is told for each of the blind's Blinds.POSITION_* values.
+COVER_STATES = {Blinds.POSITION_UNKNOWN: "unknown",
+                Blinds.POSITION_MOVING_DOWN: "closing",
+                Blinds.POSITION_MOVING_UP: "opening",
+                Blinds.POSITION_DOWN: "closed",
+                Blinds.POSITION_UP: "open",
+                Blinds.POSITION_STOPPED: "stopped"}
 
 
 async def connect_wifi():
@@ -158,17 +165,28 @@ async def main():
     device_name = os.getenv("device_name", "Blinds")
     tilt_scale = os.getenv("tilt_scale", 10.0)
 
-    disc = HADiscovery(device_name, "CircuitPython Blinds", "blinds")
-    add_components(disc)
+    disc = blinds_discovery(device_name)
+
+    def state_messages(blinds):
+        """The cover, tilt and speed state as (topic, value) pairs. It's
+        published retained, so HA keeps it across its own restarts."""
+        return ((disc.topic("cover", "state"), COVER_STATES[blinds.position]),
+                (disc.topic("tilt", "state"), blinds.tilt),
+                (disc.topic("speed", "state"), blinds.speed))
 
     def on_connect(client):
         # Deferred on-connect work, which the supervisor runs after connect()
-        # returns: discovery first, then every command topic in one SUBSCRIBE.
+        # returns and after Mqtt publishes "online": discovery first, then
+        # every command topic in one SUBSCRIBE, then the state. Republishing
+        # the state on every connect also gets the state worked out at boot
+        # to HA.
         print("Publishing discovery payload...")
         client.publish(disc.discovery_topic, disc.discovery_payload_json(), retain=True)
         topics = disc.command_topics()
         print(f"Subscribing to {topics}...")
         client.subscribe([(topic, 0) for topic in topics])
+        for topic, value in state_messages(blinds):
+            client.publish(topic, str(value), retain=True)
 
     def on_message(client, topic, message):
         if topic == disc.topic("cover", "set"):
@@ -206,26 +224,19 @@ async def main():
                 # The blind's own uptime, which publish_uptime() sends.
                 echo_topic=disc.topic("uptime_seconds", "state"),
                 echo_timeout=float(os.getenv("mqtt_echo_timeout", 45)),
-                paused=lambda: blinds.is_moving)
+                paused=lambda: blinds.is_moving,
+                availability_topic=disc.availability_topic)
 
     def report_state(blinds):
-        states = {Blinds.POSITION_UNKNOWN: "unknown",
-                  Blinds.POSITION_MOVING_DOWN: "closing",
-                  Blinds.POSITION_MOVING_UP: "opening",
-                  Blinds.POSITION_DOWN: "closed",
-                  Blinds.POSITION_UP: "open",
-                  Blinds.POSITION_STOPPED: "stopped"}
         try:
-            state = states[blinds.position]
-            print(f"Reporting state as {state}")
-            publish_if_connected(mqtt,disc.topic("cover", "state"), state)
-            publish_if_connected(mqtt,disc.topic("tilt", "state"), blinds.tilt)
-            publish_if_connected(mqtt,disc.topic("speed", "state"), blinds.speed)
+            print(f"Reporting state as {COVER_STATES[blinds.position]}")
+            for topic, value in state_messages(blinds):
+                publish_if_connected(mqtt, topic, value, retain=True)
         except Exception as e:
             print(f"Failed to post mqtt status: {e!r}")
 
     def on_opened(blinds):
-        publish_if_connected(mqtt,disc.topic("opened_count", "state"), blinds.opened_count)
+        publish_if_connected(mqtt, disc.topic("opened_count", "state"), blinds.opened_count, retain=True)
 
     blinds = Blinds(reader,
         report_state,
