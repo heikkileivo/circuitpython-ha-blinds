@@ -16,3 +16,10 @@ mqtt_broker = "192.168.1.36"
 mqtt_port = 1883
 mqtt_user = "your_mqtt_user"
 mqtt_pwd = "your_mqtt_password"
+
+# Optional. The MQTT socket and loop() timeout, in seconds; default 0.25.
+# settings.toml takes no floats, so write 1, or quote a fraction: "0.5".
+# mqtt_socket_timeout = 1
+# Optional. Rebuild the MQTT client after this many seconds of listening with
+# no echo of the blind's own uptime; default 45.
+# mqtt_echo_timeout = 45

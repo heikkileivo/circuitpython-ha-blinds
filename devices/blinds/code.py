@@ -1,12 +1,11 @@
-import time, gc, os, sys, ssl
+import time, gc, os, sys
 from time import sleep
 import microcontroller
 from watchdog import WatchDogMode
 import board, digitalio, busio
 import tinys3
 import supervisor
-import wifi, socketpool
-from bounded_mqtt import BoundedMQTT
+import wifi
 import asyncio
 import keypad
 import time
@@ -16,12 +15,18 @@ from packet import Packet, Reader
 from discovery import HADiscovery
 from components import add_components
 from blink import blink, Color, pixel
+from mqtt import Mqtt
 import storage
 
 try:
     storage.disable_usb_drive()
 except Exception as e:
     print(f"Failed to disable usb drive: {e}")
+
+# The MQTT service task sleeps this long between loop() calls. loop() blocks
+# for its timeout to twice that (0.25-0.5 s by default), so while the blind is
+# idle a call starts about every 0.5 s.
+MQTT_SERVICE_SLEEP_S = 0.25
 
 
 async def connect_wifi():
@@ -52,21 +57,56 @@ async def connect_wifi():
                 await blink(Color.RED, 3)
 
 
+def publish(mqtt, topic, value, retain=False):
+    """
+    Publish while MQTT is connected, and skip it otherwise. A failed publish
+    is only logged: Mqtt flags it, and the supervisor rebuilds the client.
+    """
+    if not mqtt.on_connected.is_set():
+        return
+    try:
+        mqtt.publish(topic, str(value), retain=retain)
+    except Exception as e:
+        print(f"Failed to publish {topic}: {e!r}")
 
-async def measure_uptime(mqtt_client, on_connected, disc, blinds):
+
+async def publish_uptime(mqtt, disc):
+    """
+    Publish uptime and the reconnect count every 10 s, while moving too.
+    Something then goes out well within keep_alive, so loop() never reaches
+    its blocking ping(). uptime_seconds is the liveness echo, so it's never
+    retained.
+    """
     start_time = time.time()
     while True:
-        await asyncio.sleep(1)
-        t = time.time()
-        uptime = t - start_time
+        uptime = int(time.time() - start_time)
+        print(f"Publishing uptime {uptime} s...")
+        publish(mqtt, disc.topic("uptime_seconds", "state"), uptime)
+        publish(mqtt, disc.topic("reconnects", "state"), mqtt.reconnects, retain=True)
+        await asyncio.sleep(10)
 
-        if uptime % 10 == 0:
-            if blinds.is_moving == False and on_connected.is_set():
-                try:
-                    print(f"Publishing uptime {int(uptime)} s...")
-                    mqtt_client.publish(disc.topic("uptime_seconds", "state"), str(int(uptime)))
-                except Exception as e:
-                    print(f"Failed to publish uptime: {e!r}")
+
+async def service_mqtt(mqtt, blinds, loop_timeout):
+    """
+    Handle incoming MQTT messages while the blind is idle, and feed the
+    watchdog.
+
+    loop() blocks the asyncio loop, so it isn't called while the blind moves.
+    The watchdog is fed on every pass, connected or not, so a broker outage
+    doesn't end in a reset. A Wi-Fi loss while idle does, 16 s later: the
+    radio gives up reconnecting by itself, and connect_wifi() at boot doesn't.
+    """
+    wifi_lost = False
+    while True:
+        if not blinds.is_moving:
+            await mqtt.loop(loop_timeout)
+        if blinds.is_moving or wifi.radio.connected:
+            wifi_lost = False
+            microcontroller.watchdog.feed()
+        elif not wifi_lost:
+            wifi_lost = True
+            print("Wi-Fi lost while idle, leaving the watchdog to reset.")
+        await asyncio.sleep(MQTT_SERVICE_SLEEP_S)
 
 
 async def status_blinker(blinds):
@@ -84,92 +124,6 @@ async def status_blinker(blinds):
             await asyncio.sleep(0.25)
         else:
             await asyncio.sleep(1)
-
-async def connect_mqtt(disc, blinds):
-    print("Setting up mqtt...")
-    on_connected = asyncio.Event()
-    pool = socketpool.SocketPool(wifi.radio)
-    mqtt_client = BoundedMQTT(
-        broker=os.getenv("mqtt_broker"),
-        port=os.getenv("mqtt_port"),
-        username=os.getenv("mqtt_user"),
-        password=os.getenv("mqtt_pwd"),
-        socket_pool=pool,
-        ssl_context=ssl.create_default_context())
-
-    def connected(client, userdata, flags, rc):
-        print("Connected to mqtt broker.")
-        on_connected.set()
-        asyncio.create_task(blink(Color.YELLOW, 3))
-        print("Publishing discovery payload...")
-        client.publish(disc.discovery_topic, disc.discovery_payload_json(), retain=True)
-        for topic in disc.command_topics():
-            print(f"Subscribing to {topic}...")
-            client.subscribe(topic)
-
-    def disconnected(client, userdata, rc):
-        print("Disconnected from mqtt broker.")
-        on_connected.reset()
-        asyncio.create_task(blink(Color.ORANGE, 5))
-
-    def message(client, topic, message):
-        print(f"New message on topic {topic}: {message}")
-        asyncio.create_task(blink(Color.GREEN, 2))
-        if topic == disc.topic("cover", "set"):
-            try:
-                if message == "OPEN":
-                    asyncio.create_task(blinds.open())
-                elif message == "CLOSE":
-                    asyncio.create_task(blinds.close())
-                elif message == "STOP":
-                    asyncio.create_task(blinds.stop())
-            except Exception as e:
-                print(f"Failed to handle cover command: {e!r}")
-        elif topic == disc.topic("speed", "set"):
-            try:
-                speed = int(float(message))
-                blinds.speed = speed
-            except Exception as e:
-                print(f"Failed to parse speed: {e!r}")
-        elif topic == disc.topic("tilt", "set"):
-            try:
-                tilt = int(float(message))
-                blinds.tilt = tilt
-            except Exception as e:
-                print(f"Failed to parse tilt: {e!r}")
-
-    print("Setting callbacks..")
-    mqtt_client.on_connect = connected
-    mqtt_client.on_disconnect = disconnected
-    mqtt_client.on_message = message
-
-    print("Connecting to MQTT broker...")
-
-    mqtt_client.connect()
-    print(f"Is connected: {mqtt_client.is_connected()}")
-
-    return mqtt_client, on_connected
-
-async def poll_mqtt(mqtt_client, on_connected, blinds, interval):
-    while True:
-        try:
-            if blinds.is_moving == False:
-                await on_connected.wait()
-                print(f"Updating mqtt, blinds state = {blinds.position}")
-                mqtt_client.loop(timeout=5)
-        except Exception as e:
-            print(f"Failed to communicate with mqtt: {e!r}, trying to reconnect...")
-            await blink(Color.ORANGE, 3)
-
-            try:
-                await connect_wifi()
-                mqtt_client.reconnect()
-                await blink(Color.GREEN, 3)
-            except Exception as e:
-                print(f"Failed to reconnect to mqtt: {e!r}")
-
-        await asyncio.sleep(interval)
-        microcontroller.watchdog.feed()
 
 def output_mem():
     # Show available memory
@@ -207,8 +161,51 @@ async def main():
     disc = HADiscovery(device_name, "CircuitPython Blinds", "blinds")
     add_components(disc)
 
-    mqtt_client = None
-    on_connected = None
+    def on_connect(client):
+        # Deferred on-connect work, which the supervisor runs after connect()
+        # returns: discovery first, then every command topic in one SUBSCRIBE.
+        print("Publishing discovery payload...")
+        client.publish(disc.discovery_topic, disc.discovery_payload_json(), retain=True)
+        topics = disc.command_topics()
+        print(f"Subscribing to {topics}...")
+        client.subscribe([(topic, 0) for topic in topics])
+
+    def on_message(client, topic, message):
+        if topic == disc.topic("cover", "set"):
+            try:
+                if message == "OPEN":
+                    asyncio.create_task(blinds.open())
+                elif message == "CLOSE":
+                    asyncio.create_task(blinds.close())
+                elif message == "STOP":
+                    asyncio.create_task(blinds.stop())
+            except Exception as e:
+                print(f"Failed to handle cover command: {e!r}")
+        elif topic == disc.topic("speed", "set"):
+            try:
+                speed = int(float(message))
+                blinds.speed = speed
+            except Exception as e:
+                print(f"Failed to parse speed: {e!r}")
+        elif topic == disc.topic("tilt", "set"):
+            try:
+                tilt = int(float(message))
+                blinds.tilt = tilt
+            except Exception as e:
+                print(f"Failed to parse tilt: {e!r}")
+
+    # settings.toml takes no floats, so a fractional value must be quoted.
+    socket_timeout = float(os.getenv("mqtt_socket_timeout", 0.25))
+    mqtt = Mqtt(on_connect_callback=on_connect,
+                on_message_callback=on_message,
+                client_id=disc.device_id,
+                socket_timeout=socket_timeout,
+                recv_timeout=3,
+                # One attempt: MiniMQTT's retries sleep past the watchdog.
+                connect_retries=1,
+                echo_topic=disc.topic("uptime_seconds", "state"),
+                echo_timeout=os.getenv("mqtt_echo_timeout", 45),
+                paused=lambda: blinds.is_moving)
 
     def report_state(blinds):
         states = {Blinds.POSITION_UNKNOWN: "unknown",
@@ -220,16 +217,14 @@ async def main():
         try:
             state = states[blinds.position]
             print(f"Reporting state as {state}")
-            if on_connected.is_set():
-                mqtt_client.publish(disc.topic("cover", "state"), state)
-                mqtt_client.publish(disc.topic("tilt", "state"), str(blinds.tilt))
-                mqtt_client.publish(disc.topic("speed", "state"), str(blinds.speed))
+            publish(mqtt, disc.topic("cover", "state"), state)
+            publish(mqtt, disc.topic("tilt", "state"), blinds.tilt)
+            publish(mqtt, disc.topic("speed", "state"), blinds.speed)
         except Exception as e:
             print(f"Failed to post mqtt status: {e!r}")
 
     def on_opened(blinds):
-        if on_connected.is_set():
-            mqtt_client.publish(disc.topic("opened_count", "state"), str(blinds.opened_count))
+        publish(mqtt, disc.topic("opened_count", "state"), blinds.opened_count)
 
     blinds = Blinds(reader,
         report_state,
@@ -240,17 +235,18 @@ async def main():
     blinds.find_out_current_state()
     await blink(Color.BLUE, 3)
     await connect_wifi()
-    mqtt_client, on_connected = await connect_mqtt(disc, blinds)
-    await blink(Color.GREEN, 3)
 
     microcontroller.watchdog.timeout = 16
     microcontroller.watchdog.mode = WatchDogMode.RESET
     print("Watchdog enabled with 16s timeout.")
 
+    # The supervisor owns connecting, and rebuilds the client when it drops.
+    mqtt.start_supervisor()
+
     tasks = []
-    tasks.append(asyncio.create_task(poll_mqtt(mqtt_client, on_connected, blinds, 4)))
+    tasks.append(asyncio.create_task(service_mqtt(mqtt, blinds, socket_timeout)))
     tasks.append(asyncio.create_task(status_blinker(blinds)))
-    tasks.append(asyncio.create_task(measure_uptime(mqtt_client, on_connected, disc, blinds)))
+    tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
 
     await asyncio.gather(*tasks)
 
