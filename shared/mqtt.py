@@ -2,8 +2,12 @@
 
 import os, time
 import asyncio
+import adafruit_connection_manager
 from bounded_mqtt import BoundedMQTT
 from blink import blink, Color
+
+# A loop() call that takes longer than this, in seconds, is logged as SLOW LOOP.
+SLOW_LOOP_S = 1
 
 
 async def mqtt_publish(state, topic, value):
@@ -25,16 +29,31 @@ async def mqtt_publish(state, topic, value):
 class Mqtt:
     """
     Thin MQTT wrapper with a clear state machine:
-    - connect() : single connection attempt (no loops, no recursion)
-    - disconnect() : clean disconnect
+    - connect() : single connection attempt on a new client (no loops, no recursion)
+    - disconnect() : throw the client away and free its sockets
     - publish() : single publish; on error, flags disconnection
+    - loop() : services incoming messages (opt-in); on error, flags disconnection
 
     External code (e.g. mqtt_supervisor) is responsible for:
     - retrying connect() on failure
     - deciding when to reconnect based on stalls / timeouts
     """
 
-    def __init__(self, on_connect_callback=None, on_message_callback=None):
+    def __init__(self, on_connect_callback=None, on_message_callback=None,
+                 client_id=None, socket_timeout=1, recv_timeout=10,
+                 echo_topic=None, echo_timeout=45):
+        """
+        Everything after the callbacks is opt-in; the defaults are what the
+        meters have always used.
+
+        - client_id: a fixed MQTT client ID. None lets MiniMQTT pick a random one.
+        - socket_timeout, recv_timeout: passed to MiniMQTT, in seconds.
+        - echo_topic: a topic the device publishes to itself, not retained.
+          The supervisor subscribes to it on every connect and rebuilds the
+          client when nothing has arrived on it for echo_timeout seconds.
+          Messages only arrive through loop(), so a device that sets it must
+          call loop() regularly.
+        """
         self.running = False
         self.last_connect = 0
         self.last_publish = 0
@@ -56,6 +75,17 @@ class Mqtt:
         self._on_connect_callback = on_connect_callback
         self._on_message_callback = on_message_callback
 
+        # Client options
+        self._client_id = client_id
+        self._socket_timeout = socket_timeout
+        self._recv_timeout = recv_timeout
+
+        # Liveness echo. last_echo is the time.monotonic() of the last echo
+        # received, across rebuilds; None until the first one.
+        self._echo_topic = echo_topic
+        self._echo_timeout = echo_timeout
+        self.last_echo = None
+
         # Deferred post-connect work (discovery publish + subscribe). Set by the
         # connect callback, run by the supervisor AFTER connect() returns - never
         # inside the CONNACK handler, where a slow/failed publish or subscribe
@@ -66,7 +96,9 @@ class Mqtt:
 
     def init(self):
         """
-        Initialize socket pool and ssl context.
+        Initialize socket pool and ssl context, once. Every client is built on
+        this same pool: a rebuild frees the pool's sockets instead of
+        replacing the pool.
         """
         import wifi, socketpool, ssl
         if self.pool is not None and self.ssl_context is not None:
@@ -88,13 +120,16 @@ class Mqtt:
             port=port,
             username=user,
             password=pwd,
+            client_id=self._client_id,
             socket_pool=self.pool,
             ssl_context=self.ssl_context,
             keep_alive=60,
-            socket_timeout=1,
+            socket_timeout=self._socket_timeout,
+            recv_timeout=self._recv_timeout,
         )
 
         on_message_cb = self._on_message_callback
+        echo_topic = self._echo_topic
 
         # Callbacks are purely reactive: they update state, do not loop.
         def _connected(client, userdata, flags, rc):
@@ -115,6 +150,10 @@ class Mqtt:
             asyncio.create_task(blink(Color.ORANGE, 5))
 
         def _message(client, topic, message):
+            if topic == echo_topic:
+                # The supervisor's own topic: record it, don't route it.
+                self.last_echo = time.monotonic()
+                return
             print(f"MQTT: message on {topic}: {message}")
             asyncio.create_task(blink(Color.GREEN, 2))
             if on_message_cb:
@@ -124,17 +163,52 @@ class Mqtt:
         self.client.on_disconnect = _disconnected
         self.client.on_message = _message
 
+    def _close_client(self):
+        """
+        Throw the client away: disconnect it, then free every socket on the
+        pool, swallowing all errors. Leaves self.client None and the pool
+        ready for a new client.
+
+        The order matters. connection_manager_close_all() unregisters the
+        client's live socket, so a disconnect() after it would raise
+        RuntimeError("Socket not managed"). Freeing the sockets also releases
+        a stale one that disconnect() left open, so the next client can
+        connect on the same pool, on MiniMQTT 7.10.0 as well as 8.1.0.
+        """
+        try:
+            print("MQTT: disconnect() called")
+            self.client.disconnect()
+        except Exception as e:
+            print(f"MQTT: disconnect failed: {repr(e)}")
+        try:
+            adafruit_connection_manager.connection_manager_close_all(self.pool)
+        except Exception as e:
+            print(f"MQTT: closing sockets failed: {repr(e)}")
+        self.client = None
+
+    def _echo_lost(self, now):
+        """
+        True when an echo topic is set and nothing has arrived on it for
+        echo_timeout seconds, counted from the last echo or the last connect,
+        whichever is later.
+        """
+        if not self._echo_topic:
+            return False
+        since = self.last_connect
+        if self.last_echo is not None and self.last_echo > since:
+            since = self.last_echo
+        return since + self._echo_timeout < now
+
     # ---------- public API used by supervisor / tasks ----------
 
     async def connect(self):
         """
         Single connection attempt.
 
-        - Ensures Wi-Fi is up.
-        - Builds MQTT client if necessary.
+        - Throws away any old client and builds a new one on the same pool.
         - Calls blocking client.connect().
         - On success: on_connected is set.
-        - On failure: on_disconnected is set and exception is re-raised.
+        - On failure: on_disconnected is set and False is returned.
 
         This function DOES NOT loop or recurse. The caller (supervisor)
         decides when to retry.
@@ -152,30 +226,21 @@ class Mqtt:
         self.on_connected.clear()
         # Don't clear on_disconnected here; it signals "needs connect".
 
-        # Build / rebuild client
+        # A client that isn't connected is never reused: rebuild it.
         if self.client:
-            try:
-                self.client.reconnect()
-                return True
-            except Exception as e:
-                self.last_error = e
-                print(f"MQTT: reconnect failed: {repr(e)}")
-                self.on_connected.clear()
-                self.on_disconnected.set()
-                return False
-        else:
-            self._build_client()
+            self._close_client()
 
-            try:
-                print("MQTT: connecting to broker...")
-                self.client.connect()  # blocking, but short
-                return True
-            except Exception as e:
-                self.last_error = e
-                print(f"MQTT: connect failed: {repr(e)}")
-                self.on_connected.clear()
-                self.on_disconnected.set()
-                return False
+        try:
+            self._build_client()
+            print("MQTT: connecting to broker...")
+            self.client.connect()  # blocking, but short
+            return True
+        except Exception as e:
+            self.last_error = e
+            print(f"MQTT: connect failed: {repr(e)}")
+            self.on_connected.clear()
+            self.on_disconnected.set()
+            return False
 
     def publish(self, topic, msg):
         """
@@ -203,46 +268,67 @@ class Mqtt:
             self.on_disconnected.set()
             raise
 
+    async def loop(self, timeout):
+        """
+        Service incoming messages for about `timeout` seconds, which must be
+        at least socket_timeout. The call blocks the asyncio loop meanwhile.
+
+        Returns True on success. Does nothing and returns False while not
+        connected or once disconnection is flagged. Any exception flags
+        disconnection for the supervisor to rebuild, and returns False.
+        """
+        async with self.lock:
+            if self.on_disconnected.is_set() or not (self.client and self.client.is_connected()):
+                return False
+            start = time.monotonic_ns()
+            try:
+                self.client.loop(timeout)
+                return True
+            except Exception as e:
+                self.last_error = e
+                print(f"MQTT: loop failed: {repr(e)}")
+                self.on_connected.clear()
+                self.on_disconnected.set()
+                return False
+            finally:
+                elapsed = (time.monotonic_ns() - start) / 1_000_000_000
+                if elapsed > SLOW_LOOP_S:
+                    print(f"MQTT: SLOW LOOP {elapsed:.2f} s")
+
     def subscribe(self, topic):
         """Subscribe to an MQTT topic."""
         if self.client and self.client.is_connected():
             self.client.subscribe(topic)
 
     def _run_pending_on_connect(self):
-        """Run the deferred discovery-publish + subscribe AFTER a successful
-        connect, outside connect()'s CONNACK handler. If it fails it stays
-        pending and retries on the next supervisor pass, rather than triggering
-        a reconnect loop."""
+        """Run the deferred on-connect work AFTER a successful connect,
+        outside connect()'s CONNACK handler: the connect callback (discovery
+        publish + subscribe), then the echo subscribe. If it fails it stays
+        pending and retries on the next supervisor pass, rather than
+        triggering a reconnect loop."""
         if not self._pending_on_connect:
             return
         if not (self.client and self.client.is_connected()):
             return
-        if self._on_connect_callback:
-            try:
+        try:
+            if self._on_connect_callback:
                 self._on_connect_callback(self.client)
-                self._pending_on_connect = False
-            except Exception as e:
-                print(f"on_connect work failed, will retry: {repr(e)}")
-        else:
+            if self._echo_topic:
+                self.client.subscribe(self._echo_topic)
             self._pending_on_connect = False
+        except Exception as e:
+            print(f"on_connect work failed, will retry: {repr(e)}")
 
     def disconnect(self):
         """
-        Clean disconnect. Does not loop or reconnect.
+        Clean disconnect: throws the client away and frees its sockets,
+        keeping the pool. Does not loop or reconnect.
         """
         print("Disconnecting mqtt client...")
         if self.client:
-            try:
-                print("MQTT: disconnect() called")
-                self.client.disconnect()
-            except Exception as e:
-                print(f"MQTT: disconnect failed: {repr(e)}")
-            finally:
-                self.on_connected.clear()
-                self.on_disconnected.set()
-                self.client = None
-                self.ssl_context = None
-                self.pool = None
+            self._close_client()
+            self.on_connected.clear()
+            self.on_disconnected.set()
         else:
             print("Already disconnected.")
 
@@ -267,12 +353,16 @@ class Mqtt:
 
         No active PINGREQ probe: adafruit_minimqtt's ping() runs a blocking
         read loop for up to keep_alive seconds waiting for PINGRESP, and since
-        nothing here calls client.loop(), on a half-dead socket that wait
+        the meters never call client.loop(), on a half-dead socket that wait
         freezes the whole asyncio loop (sampling stops, the watchdog goes
         unfed). Instead the regular ~10s uptime publishes keep the broker
         keep-alive fresh; a dead socket then surfaces as a publish error that
         sets on_disconnected, and we rebuild the client. STALL_TIMEOUT is the
         backstop for a broker that goes away without sending us anything.
+
+        A successful publish doesn't prove the link is alive: it only fills
+        lwIP's send buffer. With an echo topic, the supervisor also rebuilds
+        when the device's own publishes stop coming back.
         """
         STALL_TIMEOUT = 90       # seconds without a successful publish -> rebuild
         RECONNECT_DELAY = 15     # seconds between connect attempts
@@ -282,8 +372,14 @@ class Mqtt:
             now = time.monotonic()
 
             stall = self.client and (self.last_publish + STALL_TIMEOUT < now)
-            if self.client and (self.on_disconnected.is_set() or stall):
-                reason = "disconnect flagged" if self.on_disconnected.is_set() else "publish stall"
+            echo_lost = self.client and self._echo_lost(now)
+            if self.client and (self.on_disconnected.is_set() or stall or echo_lost):
+                if self.on_disconnected.is_set():
+                    reason = "disconnect flagged"
+                elif stall:
+                    reason = "publish stall"
+                else:
+                    reason = "echo timeout"
                 print(f"MQTT supervisor: {reason}, rebuilding client.")
                 async with self.lock:
                     self.disconnect()
@@ -295,7 +391,9 @@ class Mqtt:
                     async with self.lock:
                         connected = await self.connect()
                     if connected:
-                        self.last_connect = now
+                        # After the blocking connect, so a slow one doesn't
+                        # eat into the echo timeout.
+                        self.last_connect = time.monotonic()
                         self.last_publish = now
                         self._run_pending_on_connect()
                     else:
@@ -305,6 +403,8 @@ class Mqtt:
                     print("MQTT supervisor: connecting failed:", e)
                     await asyncio.sleep(RECONNECT_DELAY)
                     continue
+            elif self._echo_topic:
+                print(f"MQTT supervisor: alive. Last publish = {self.last_publish}, last echo = {self.last_echo}")
             else:
                 print(f"MQTT supervisor: alive. Last publish = {self.last_publish}")
 
