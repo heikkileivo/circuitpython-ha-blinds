@@ -10,6 +10,9 @@ from blink import blink, Color
 # that by more than this, in seconds, is logged as SLOW LOOP.
 SLOW_LOOP_MARGIN_S = 0.5
 
+# The supervisor sleeps this long, in seconds, between its blocking steps.
+YIELD_S = 0.1
+
 
 async def mqtt_publish(state, topic, value):
     """
@@ -406,6 +409,12 @@ class Mqtt:
                 print(f"MQTT supervisor: {reason}, rebuilding client.")
                 async with self.lock:
                     self.disconnect()
+                # Rebuilding, connecting and the on-connect work each block.
+                # Yield between them, so a device that feeds its watchdog from
+                # a task only has to fit each one, not all three, in the timeout.
+                # A short sleep, not sleep(0), lets tasks that are already due
+                # run first.
+                await asyncio.sleep(YIELD_S)
 
             if not self.client:
                 print("MQTT supervisor: connecting MQTT client.")
@@ -418,6 +427,7 @@ class Mqtt:
                         # eat into the echo timeout.
                         self.last_connect = time.monotonic()
                         self.last_publish = now
+                        await asyncio.sleep(YIELD_S)
                         self._run_pending_on_connect()
                     else:
                         await asyncio.sleep(RECONNECT_DELAY)

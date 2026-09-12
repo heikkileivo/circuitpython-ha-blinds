@@ -57,7 +57,7 @@ async def connect_wifi():
                 await blink(Color.RED, 3)
 
 
-def publish(mqtt, topic, value, retain=False):
+def publish_if_connected(mqtt,topic, value, retain=False):
     """
     Publish while MQTT is connected, and skip it otherwise. A failed publish
     is only logged: Mqtt flags it, and the supervisor rebuilds the client.
@@ -81,8 +81,8 @@ async def publish_uptime(mqtt, disc):
     while True:
         uptime = int(time.time() - start_time)
         print(f"Publishing uptime {uptime} s...")
-        publish(mqtt, disc.topic("uptime_seconds", "state"), uptime)
-        publish(mqtt, disc.topic("reconnects", "state"), mqtt.reconnects, retain=True)
+        publish_if_connected(mqtt,disc.topic("uptime_seconds", "state"), uptime)
+        publish_if_connected(mqtt,disc.topic("reconnects", "state"), mqtt.reconnects, retain=True)
         await asyncio.sleep(10)
 
 
@@ -203,8 +203,9 @@ async def main():
                 recv_timeout=3,
                 # One attempt: MiniMQTT's retries sleep past the watchdog.
                 connect_retries=1,
+                # The blind's own uptime, which publish_uptime() sends.
                 echo_topic=disc.topic("uptime_seconds", "state"),
-                echo_timeout=os.getenv("mqtt_echo_timeout", 45),
+                echo_timeout=float(os.getenv("mqtt_echo_timeout", 45)),
                 paused=lambda: blinds.is_moving)
 
     def report_state(blinds):
@@ -217,14 +218,14 @@ async def main():
         try:
             state = states[blinds.position]
             print(f"Reporting state as {state}")
-            publish(mqtt, disc.topic("cover", "state"), state)
-            publish(mqtt, disc.topic("tilt", "state"), blinds.tilt)
-            publish(mqtt, disc.topic("speed", "state"), blinds.speed)
+            publish_if_connected(mqtt,disc.topic("cover", "state"), state)
+            publish_if_connected(mqtt,disc.topic("tilt", "state"), blinds.tilt)
+            publish_if_connected(mqtt,disc.topic("speed", "state"), blinds.speed)
         except Exception as e:
             print(f"Failed to post mqtt status: {e!r}")
 
     def on_opened(blinds):
-        publish(mqtt, disc.topic("opened_count", "state"), blinds.opened_count)
+        publish_if_connected(mqtt,disc.topic("opened_count", "state"), blinds.opened_count)
 
     blinds = Blinds(reader,
         report_state,
