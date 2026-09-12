@@ -1,8 +1,7 @@
 import json
 import unittest
 
-from components import add_components
-from discovery import HADiscovery
+from components import blinds_discovery
 
 # Right blind's MAC and name, as in the budget decided in #14.
 MAC = bytes.fromhex("f412fa448000")
@@ -13,9 +12,7 @@ BUDGET_BYTES = 4096
 
 
 def blinds_payload():
-    disc = HADiscovery(DEVICE_NAME, "CircuitPython Blinds", "blinds", mac=MAC)
-    add_components(disc)
-    return disc.discovery_payload_json()
+    return blinds_discovery(DEVICE_NAME, mac=MAC).discovery_payload_json()
 
 
 class BlindsDiscoveryTest(unittest.TestCase):
@@ -23,6 +20,18 @@ class BlindsDiscoveryTest(unittest.TestCase):
         size = len(blinds_payload().encode("utf-8"))
 
         self.assertLessEqual(size, BUDGET_BYTES)
+
+    def test_availability_sits_once_at_the_device_root(self):
+        # One root topic covers every entity. The payloads stay at HA's
+        # defaults, online and offline, which the last will and the
+        # on-connect publish use.
+        payload = json.loads(blinds_payload())
+
+        topic = payload.pop("availability_topic")
+
+        self.assertEqual(topic, "blinds_f412fa448000/availability")
+        # Nothing else: no per-component availability, no custom payloads.
+        self.assertNotIn("availab", json.dumps(payload))
 
     def test_payload_is_compact_json(self):
         payload = blinds_payload()

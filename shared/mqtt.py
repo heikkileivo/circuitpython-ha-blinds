@@ -46,7 +46,7 @@ class Mqtt:
     def __init__(self, on_connect_callback=None, on_message_callback=None,
                  client_id=None, socket_timeout=1, recv_timeout=10,
                  connect_retries=5, echo_topic=None, echo_timeout=45,
-                 paused=None):
+                 paused=None, availability_topic=None):
         """
         Everything after the callbacks is opt-in; the defaults are what the
         meters have always used.
@@ -63,6 +63,11 @@ class Mqtt:
           that sets it must call loop() regularly.
         - paused: a callable. While it returns True, the supervisor neither
           rebuilds nor connects, because both block the asyncio loop.
+        - availability_topic: every new client sets a retained "offline" last
+          will on it before connecting, and the on-connect work publishes a
+          retained "online" to it first, on every connect. Pair it with a
+          fixed client_id: the broker then publishes a stale session's will
+          before the new CONNACK, so it can't land after "online".
         """
         self.running = False
         self.last_connect = 0
@@ -91,6 +96,7 @@ class Mqtt:
         self._recv_timeout = recv_timeout
         self._connect_retries = connect_retries
         self._paused = paused
+        self._availability_topic = availability_topic
 
         # Liveness echo. last_echo is the time.monotonic() of the last echo
         # received, across rebuilds; None until the first one. last_loop is
@@ -142,6 +148,11 @@ class Mqtt:
             recv_timeout=self._recv_timeout,
             connect_retries=self._connect_retries,
         )
+        if self._availability_topic:
+            # The will doesn't survive a rebuild, so each new client sets it.
+            # Topic and message positional, retain as a keyword: MiniMQTT
+            # 7.10.1 renamed the message argument and swapped qos and retain.
+            self.client.will_set(self._availability_topic, "offline", retain=True)
 
         on_message_cb = self._on_message_callback
         echo_topic = self._echo_topic
@@ -323,15 +334,17 @@ class Mqtt:
 
     def _run_pending_on_connect(self):
         """Run the deferred on-connect work AFTER a successful connect,
-        outside connect()'s CONNACK handler: the connect callback (discovery
-        publish + subscribe), then the echo subscribe. If it fails it stays
-        pending and retries on the next supervisor pass, rather than
-        triggering a reconnect loop."""
+        outside connect()'s CONNACK handler: the "online" publish, the
+        connect callback (discovery publish + subscribe), then the echo
+        subscribe. If it fails it stays pending and retries on the next
+        supervisor pass, rather than triggering a reconnect loop."""
         if not self._pending_on_connect:
             return
         if not (self.client and self.client.is_connected()):
             return
         try:
+            if self._availability_topic:
+                self.client.publish(self._availability_topic, "online", retain=True)
             if self._on_connect_callback:
                 self._on_connect_callback(self.client)
             if self._echo_topic:
