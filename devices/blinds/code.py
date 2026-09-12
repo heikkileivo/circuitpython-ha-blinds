@@ -27,7 +27,7 @@ except Exception as e:
 # idle a call starts about every 0.5 s.
 MQTT_SERVICE_SLEEP_S = 0.25
 
-# The cover state HA is told for each blind position.
+# The cover state HA is told for each of the blind's Blinds.POSITION_* values.
 COVER_STATES = {Blinds.POSITION_UNKNOWN: "unknown",
                 Blinds.POSITION_MOVING_DOWN: "closing",
                 Blinds.POSITION_MOVING_UP: "opening",
@@ -236,7 +236,7 @@ async def main():
             print(f"Failed to post mqtt status: {e!r}")
 
     def on_opened(blinds):
-        publish_if_connected(mqtt,disc.topic("opened_count", "state"), blinds.opened_count, retain=True)
+        publish_if_connected(mqtt, disc.topic("opened_count", "state"), blinds.opened_count, retain=True)
 
     blinds = Blinds(reader,
         report_state,

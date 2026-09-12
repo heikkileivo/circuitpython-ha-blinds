@@ -66,8 +66,9 @@ class Mqtt:
         - availability_topic: every new client sets a retained "offline" last
           will on it before connecting, and the on-connect work publishes a
           retained "online" to it first, on every connect. Pair it with a
-          fixed client_id: the broker then publishes a stale session's will
-          before the new CONNACK, so it can't land after "online".
+          fixed client_id: Mosquitto then publishes a stale session's will
+          on takeover, before the new CONNACK, so it can't land after
+          "online".
         """
         self.running = False
         self.last_connect = 0
