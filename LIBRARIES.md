@@ -10,7 +10,7 @@ Every file is byte-identical to the `lib/` folder of its release asset below. Th
 | ConnectionManager | 3.1.1 | `adafruit_connection_manager.mpy` | [adafruit-circuitpython-connectionmanager-9.x-mpy-3.1.1.zip](https://github.com/adafruit/Adafruit_CircuitPython_ConnectionManager/releases/download/3.1.1/adafruit-circuitpython-connectionmanager-9.x-mpy-3.1.1.zip) |
 | DateTime | 1.2.7 | `adafruit_datetime.mpy` | [adafruit-circuitpython-datetime-9.x-mpy-1.2.7.zip](https://github.com/adafruit/Adafruit_CircuitPython_datetime/releases/download/1.2.7/adafruit-circuitpython-datetime-9.x-mpy-1.2.7.zip) |
 | Debouncer | 2.0.8 | `adafruit_debouncer.mpy` | [adafruit-circuitpython-debouncer-9.x-mpy-2.0.8.zip](https://github.com/adafruit/Adafruit_CircuitPython_Debouncer/releases/download/2.0.8/adafruit-circuitpython-debouncer-9.x-mpy-2.0.8.zip) |
-| MiniMQTT | 7.10.0 | `adafruit_minimqtt/` | [adafruit-circuitpython-minimqtt-9.x-mpy-7.10.0.zip](https://github.com/adafruit/Adafruit_CircuitPython_MiniMQTT/releases/download/7.10.0/adafruit-circuitpython-minimqtt-9.x-mpy-7.10.0.zip) |
+| MiniMQTT | 8.1.0 | `adafruit_minimqtt/` | [adafruit-circuitpython-minimqtt-9.x-mpy-8.1.0.zip](https://github.com/adafruit/Adafruit_CircuitPython_MiniMQTT/releases/download/8.1.0/adafruit-circuitpython-minimqtt-9.x-mpy-8.1.0.zip) |
 | ticks | 1.0.13 | `adafruit_ticks.mpy` | [adafruit-circuitpython-ticks-9.x-mpy-1.0.13.zip](https://github.com/adafruit/Adafruit_CircuitPython_Ticks/releases/download/1.0.13/adafruit-circuitpython-ticks-9.x-mpy-1.0.13.zip) |
 
 ## Changing a library
