@@ -25,6 +25,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Except the root lib/: the device libraries that deploy.py --libs mirrors
+!/lib/
 lib64/
 parts/
 sdist/
