@@ -8,6 +8,10 @@ test_results.txt
 devices.json
 backups/
 
+# Claude Code: per-machine permissions and agent worktrees
+.claude/settings.local.json
+.claude/worktrees/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
