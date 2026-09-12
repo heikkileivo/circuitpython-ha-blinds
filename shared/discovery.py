@@ -1,10 +1,12 @@
 import json
-import wifi
 
 
 class HADiscovery:
-    def __init__(self, device_name, device_model, device_id_prefix):
-        mac = wifi.radio.mac_address
+    def __init__(self, device_name, device_model, device_id_prefix, mac=None):
+        if mac is None:
+            # Imported here so host tests, which pass a MAC, run on CPython.
+            import wifi
+            mac = wifi.radio.mac_address
         self._device_id = device_id_prefix + "_" + "".join(f"{b:02x}" for b in mac)
         self._device_name = device_name
         self._device_model = device_model
@@ -33,6 +35,11 @@ class HADiscovery:
             config["command_topic"] = self.topic(key, "set")
         entry.update(config)
         self._components[uid] = entry
+
+    def remove_component(self, key, platform):
+        # HA removes a component whose entry has only its platform. Leaving it
+        # out of the payload leaves the entity behind.
+        self._components[f"{self._device_id}_{key}"] = {"p": platform}
 
     def command_topics(self):
         topics = []
@@ -63,4 +70,4 @@ class HADiscovery:
             },
             "cmps": self._components,
         }
-        return json.dumps(payload)
+        return json.dumps(payload, separators=(",", ":"))

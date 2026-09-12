@@ -1,0 +1,64 @@
+import json
+import unittest
+
+from components import add_components
+from discovery import HADiscovery
+
+# Right blind's MAC and name, as in the budget decided in #14.
+MAC = bytes.fromhex("f412fa448000")
+DEVICE_NAME = "Upstairs Living Room Right Blinds"
+
+# The broker takes a 5 KB publish since MiniMQTT 8.1.0; this leaves headroom.
+BUDGET_BYTES = 4096
+
+
+def blinds_payload():
+    disc = HADiscovery(DEVICE_NAME, "CircuitPython Blinds", "blinds", mac=MAC)
+    add_components(disc)
+    return disc.discovery_payload_json()
+
+
+class BlindsDiscoveryTest(unittest.TestCase):
+    def test_payload_fits_the_budget(self):
+        size = len(blinds_payload().encode("utf-8"))
+
+        self.assertLessEqual(size, BUDGET_BYTES)
+
+    def test_payload_is_compact_json(self):
+        payload = blinds_payload()
+
+        self.assertNotIn(", ", payload)
+        self.assertNotIn(": ", payload)
+
+    def test_kept_components_keep_their_unique_ids(self):
+        # HA derives the entity IDs the automations use from these.
+        components = json.loads(blinds_payload())["cmps"]
+
+        for uid in (
+            "blinds_f412fa448000_cover",
+            "blinds_f412fa448000_speed",
+            "blinds_f412fa448000_opened_count",
+            "blinds_f412fa448000_uptime_seconds",
+        ):
+            self.assertEqual(components[uid]["unique_id"], uid)
+
+    def test_dropped_components_are_removed_with_platform_only_entries(self):
+        # A platform-only entry is how HA's device discovery removes one
+        # component; leaving it out would leave the entity behind.
+        components = json.loads(blinds_payload())["cmps"]
+
+        self.assertEqual(components["blinds_f412fa448000_uptime"], {"p": "sensor"})
+        self.assertEqual(components["blinds_f412fa448000_status_led"], {"p": "switch"})
+
+    def test_reconnects_is_a_diagnostic_measurement_like_the_meters(self):
+        reconnects = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_reconnects"]
+
+        self.assertEqual(reconnects["p"], "sensor")
+        self.assertEqual(reconnects["name"], "Reconnects")
+        self.assertEqual(reconnects["entity_category"], "diagnostic")
+        self.assertEqual(reconnects["state_class"], "measurement")
+        self.assertEqual(reconnects["state_topic"], "blinds_f412fa448000/reconnects/state")
+
+
+if __name__ == "__main__":
+    unittest.main()
