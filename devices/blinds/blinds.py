@@ -427,8 +427,8 @@ class Blinds:
                                 os.getenv("open_timeout", 45))              # Timeout
             self._position = Blinds.POSITION_UP
             self.report_state()
-            self._on_opened(self)
             self._opened += 1
+            self._on_opened(self)
             print("Completed opening blinds.")
 
         async def stop(self):
