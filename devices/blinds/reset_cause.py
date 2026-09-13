@@ -101,9 +101,13 @@ def at_boot():
 
 def restart(cause):
     """Restart with a firmware-triggered cause, BROWNOUT to WATCHDOG: store
-    it, then reset. Doesn't return."""
+    it, then reset. Doesn't return, even if storing fails: a restart
+    published as "software" beats none, for example staying in safe mode."""
     import microcontroller
-    microcontroller.nvm[NVM_OFFSET:NVM_OFFSET + 2] = record(cause)
+    try:
+        microcontroller.nvm[NVM_OFFSET:NVM_OFFSET + 2] = record(cause)
+    except Exception as e:
+        print(f"Failed to store the reset cause: {e!r}")
     microcontroller.reset()
 
 

@@ -26,6 +26,13 @@ STOP_LIFT = b"\xff\xff\x01\x05\x03\x2c\x00\x00\xca"
 
 WAIT_S = 30
 
+# Every member of supervisor.SafeModeReason in CircuitPython 9.1.1
+# (shared-bindings/supervisor/SafeModeReason.c).
+_REASONS = ("NONE", "BROWNOUT", "FLASH_WRITE_FAIL", "GC_ALLOC_OUTSIDE_VM", "HARD_FAULT",
+            "INTERRUPT_ERROR", "NLR_JUMP_FAIL", "NO_CIRCUITPY", "NO_HEAP", "PROGRAMMATIC",
+            "SDK_FATAL_ERROR", "STACK_OVERFLOW", "USB_BOOT_DEVICE_NOT_INTERFACE_ZERO",
+            "USB_TOO_MANY_ENDPOINTS", "USB_TOO_MANY_INTERFACE_NAMES", "USER", "WATCHDOG")
+
 
 def decision(reason):
     """What to do in safe mode, given the name of its reason, such as
@@ -56,13 +63,14 @@ def recover():
 
 
 def _reason():
-    """The name of the safe-mode reason if it's a brownout, otherwise the
-    reason as it prints."""
+    """The name of the safe-mode reason, such as "BROWNOUT". Compared with
+    each member, so it doesn't rely on how an enum value prints."""
     import supervisor
     reason = supervisor.runtime.safe_mode_reason
-    if reason == supervisor.SafeModeReason.BROWNOUT:
-        return "BROWNOUT"
-    return str(reason)
+    for name in _REASONS:
+        if getattr(supervisor.SafeModeReason, name, None) == reason:
+            return name
+    return "UNKNOWN"
 
 
 if __name__ == "__main__":
