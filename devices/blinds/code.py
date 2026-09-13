@@ -159,8 +159,8 @@ async def main():
 
     reader = Reader(uart)
     reader.flush_buffer()
-    health = servo_health.health_message(*servo_health.boot_reinit(reader))
-    health_json = json.dumps(health, separators=(",", ":"))
+    servo_reads = servo_health.boot_reinit(reader)
+    health_json = json.dumps(servo_health.health_message(*servo_reads), separators=(",", ":"))
     print(f"Servo health: {health_json}")
 
     output_mem()

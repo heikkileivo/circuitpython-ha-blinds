@@ -24,7 +24,7 @@ BLOCKED_ATTRIBUTES = {
 def answered(**changes):
     """The health read of a servo that answered: 8.5 V, 21 °C, ERROR byte
     and status 0, its boot stop confirmed."""
-    fields = dict(stopped=True, error=0, voltage=85, temperature=21, status=0,
+    fields = dict(stop_confirmed=True, error=0, voltage=85, temperature=21, status=0,
                   uart_errors=0)
     fields.update(changes)
     return ServoRead(**fields)
@@ -36,7 +36,7 @@ class ClassifyTest(unittest.TestCase):
 
     def test_a_servo_that_gives_no_reply_is_no_reply(self):
         # It didn't answer the boot stop either, so nothing confirmed it.
-        self.assertEqual(classify(ServoRead(stopped=False, uart_errors=9)), "no_reply")
+        self.assertEqual(classify(ServoRead(stop_confirmed=False, uart_errors=9)), "no_reply")
 
     def test_a_servo_that_reports_an_error_is_error(self):
         # Bit 5 of the ERROR byte is overload, bit 2 overheating.
@@ -50,22 +50,21 @@ class ClassifyTest(unittest.TestCase):
 
     def test_a_servo_that_answers_but_whose_boot_stop_was_unconfirmed_is_error(self):
         # A servo left driving may still be driving, so HA has to hear of it.
-        self.assertEqual(classify(answered(stopped=False)), "error")
+        self.assertEqual(classify(answered(stop_confirmed=False)), "error")
 
 
 class HealthMessageTest(unittest.TestCase):
     def test_the_health_is_the_worse_of_the_lift_and_tilt_servos(self):
-        # No reply is the worst: it tells nothing, and the servo may still be
-        # driving. It's what HA power-cycles the outlet for.
-        silent = ServoRead(stopped=False)
+        # Decided for #38: ok, then error, then no reply as the worst.
+        no_reply = ServoRead(stop_confirmed=False)
         overloaded = answered(error=0x20)
         cases = [
             (answered(), answered(), "ok"),
             (overloaded, answered(), "error"),
             (answered(), overloaded, "error"),
-            (answered(), silent, "no_reply"),
-            (silent, overloaded, "no_reply"),
-            (overloaded, silent, "no_reply"),
+            (answered(), no_reply, "no_reply"),
+            (no_reply, overloaded, "no_reply"),
+            (overloaded, no_reply, "no_reply"),
         ]
         for lift, tilt, expected in cases:
             with self.subTest(lift=classify(lift), tilt=classify(tilt)):
@@ -74,7 +73,7 @@ class HealthMessageTest(unittest.TestCase):
     def test_each_servo_has_its_own_attributes(self):
         # 74 is the 7.4 V the bench's stall pulled the supply down to.
         message = health_message(answered(voltage=74, temperature=31, uart_errors=2),
-                                 ServoRead(stopped=False, uart_errors=9))
+                                 ServoRead(stop_confirmed=False, uart_errors=9))
 
         self.assertEqual(message["lift"], {"health": "ok", "temperature": 31,
                                            "idle_voltage": 7.4, "uart_errors": 2})
@@ -93,13 +92,13 @@ class FakeServo:
     """One servo on a FakeBus: its memory table, and how it misbehaves.
 
     ignored_writes writes get their reply but change nothing, missed_pings
-    pings get no reply, and a silent servo never replies. Every reply
-    carries error as its ERROR byte.
+    pings get no reply, and a servo that doesn't answer never replies. Every
+    reply carries error as its ERROR byte.
     """
 
     def __init__(self, scs_id, duty=0, torque=0, voltage=85, temperature=21,
                  status=0, error=0, ignored_writes=0, missed_pings=0,
-                 silent=False):
+                 answers=True):
         self.id = scs_id
         self.memory = bytearray(Address.PRESENT_CURRENT_H + 1)
         # Words are big-endian: the high byte sits at the _L address.
@@ -112,7 +111,7 @@ class FakeServo:
         self.error = error
         self.ignored_writes = ignored_writes
         self.missed_pings = missed_pings
-        self.silent = silent
+        self.answers = answers
 
     @property
     def duty(self):
@@ -141,7 +140,7 @@ class FakeBus:
         scs_id, instruction, params = request[2], request[4], bytes(request[5:-1])
         self.requests.append((scs_id, instruction, params))
         servo = self.servos.get(scs_id)
-        if servo is None or servo.silent:
+        if servo is None or not servo.answers:
             return
         if instruction == Instruction.PING and servo.missed_pings:
             servo.missed_pings -= 1
@@ -177,8 +176,8 @@ class BootReinitTest(unittest.TestCase):
         self.assertEqual(bus.requests[0],
                          (1, Instruction.WRITE, bytes((Address.GOAL_TIME_L, 0, 0))))
         self.assertEqual((lift.duty, lift.torque, tilt.torque), (0, 0, 0))
-        self.assertTrue(lift_read.stopped)
-        self.assertTrue(tilt_read.stopped)
+        self.assertTrue(lift_read.stop_confirmed)
+        self.assertTrue(tilt_read.stop_confirmed)
 
     def test_a_write_that_doesnt_take_is_retried_until_it_reads_back(self):
         lift = FakeServo(1, duty=800, torque=1, ignored_writes=2)
@@ -187,7 +186,7 @@ class BootReinitTest(unittest.TestCase):
         lift_read, _ = boot_reinit(Reader(FakeBus(lift, tilt)))
 
         self.assertEqual((lift.duty, lift.torque), (0, 0))
-        self.assertTrue(lift_read.stopped)
+        self.assertTrue(lift_read.stop_confirmed)
 
     def test_a_stop_that_never_reads_back_is_unconfirmed(self):
         lift = FakeServo(1, duty=800, torque=1, ignored_writes=100)
@@ -195,8 +194,8 @@ class BootReinitTest(unittest.TestCase):
 
         lift_read, tilt_read = boot_reinit(Reader(FakeBus(lift, tilt)))
 
-        self.assertFalse(lift_read.stopped)
-        self.assertTrue(tilt_read.stopped)
+        self.assertFalse(lift_read.stop_confirmed)
+        self.assertTrue(tilt_read.stop_confirmed)
 
     def test_the_health_read_reaches_the_message(self):
         # The lift warmed and pulled the supply down; the tilt reports
@@ -220,9 +219,9 @@ class BootReinitTest(unittest.TestCase):
         self.assertEqual(message["lift"]["health"], "ok")
         self.assertEqual(message["lift"]["uart_errors"], 1)
 
-    def test_a_silent_servo_is_no_reply_and_the_other_still_stops(self):
+    def test_a_servo_that_never_answers_is_no_reply_and_the_other_still_stops(self):
         lift = FakeServo(1, duty=800, torque=1)
-        tilt = FakeServo(2, silent=True)
+        tilt = FakeServo(2, answers=False)
 
         message = health_message(*boot_reinit(Reader(FakeBus(lift, tilt))))
 

@@ -23,9 +23,9 @@ class ServoRead:
     """One servo's health read at boot. error is None when the servo gave no
     good reply."""
 
-    def __init__(self, stopped, error=None, voltage=None, temperature=None,
+    def __init__(self, stop_confirmed, error=None, voltage=None, temperature=None,
                  status=None, uart_errors=0):
-        self.stopped = stopped
+        self.stop_confirmed = stop_confirmed
         self.error = error
         self.voltage = voltage
         self.temperature = temperature
@@ -45,20 +45,20 @@ def boot_reinit(reader):
             _health_read(reader, TILT_ID, tilt_limp))
 
 
-def _health_read(reader, scs_id, stopped):
+def _health_read(reader, scs_id, stop_confirmed):
     """Ping the servo, and read 62-66 (voltage, temperature, async write
     flag, status, moving) in one transaction."""
-    ping = _first_reply(lambda: reader.ping(scs_id))
-    block = None if ping is None else _first_reply(
+    ping_error = _first_reply(lambda: reader.ping(scs_id))
+    block = None if ping_error is None else _first_reply(
         lambda: reader.read(scs_id, Address.PRESENT_VOLTAGE, 5))
     if block is None:
         print(f"Servo {scs_id}: no reply to the health read.")
-        return ServoRead(stopped, uart_errors=reader.uart_errors(scs_id))
+        return ServoRead(stop_confirmed, uart_errors=reader.uart_errors(scs_id))
     error, data = block
     voltage, temperature, _, status, moving = data
-    print(f"Servo {scs_id}: stopped {stopped}, ERROR {ping | error:#04x}, "
+    print(f"Servo {scs_id}: stop_confirmed {stop_confirmed}, ERROR {ping_error | error:#04x}, "
           f"status {status:#04x}, moving {moving}, {voltage / 10} V, {temperature} C")
-    return ServoRead(stopped, error=ping | error, voltage=voltage,
+    return ServoRead(stop_confirmed, error=ping_error | error, voltage=voltage,
                      temperature=temperature, status=status,
                      uart_errors=reader.uart_errors(scs_id))
 
@@ -88,7 +88,7 @@ def classify(read):
     """One servo's health: ok, no_reply or error."""
     if read.error is None:
         return NO_REPLY
-    if read.error or read.status or not read.stopped:
+    if read.error or read.status or not read.stop_confirmed:
         return ERROR
     return OK
 
