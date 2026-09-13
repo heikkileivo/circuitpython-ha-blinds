@@ -1,5 +1,6 @@
 from packet import Address
-from time import sleep
+from revolutions import RevolutionCounter
+from time import monotonic_ns, sleep
 import microcontroller
 import asyncio, digitalio
 import math
@@ -187,13 +188,21 @@ async def poll_pin(pin, finish_event, callback):
             await asyncio.sleep(0)
     print(f"Completed polling for pin {pin}.")
 
-async def count_revolutions(servo, finish_event, comparer, callback):
+# How many identical servo angles in a row mean the lift has stopped.
+STOPPED_SAMPLES = 10
+
+async def count_revolutions(servo, finish_event, counting_up, callback):
+    """Sample the lift's servo angle every lift_sample_ms, count its
+    revolutions, and end the move once the angle stops changing."""
+    sample_s = os.getenv("lift_sample_ms", 50) / 1000
+    counter = RevolutionCounter(counting_up)
     old_position = 0
-    revolutions = 0
     print(f"Counting revolutions for servo {servo.id}...")
     is_rotating = False
-    stop_counter = 10
+    stop_counter = STOPPED_SAMPLES
     while True:
+        # monotonic() loses precision within hours of uptime; monotonic_ns() doesn't.
+        started = monotonic_ns()
         new_position, _ = servo.position
         if new_position:
             if is_rotating:
@@ -203,20 +212,21 @@ async def count_revolutions(servo, finish_event, comparer, callback):
                         print("Servo has stopped.")
                         finish_event.set()
                         break
+                else:
+                    stop_counter = STOPPED_SAMPLES
             else:
                 if is_rotating == False:
                     if old_position and old_position != new_position:
                         print("Servo started rotating.")
                         is_rotating = True
 
-            if comparer(old_position, new_position):
-                revolutions += 1
-                callback(revolutions)
+            if counter.feed(new_position):
+                callback(counter.count)
             old_position = new_position
         if finish_event.is_set():
             break
 
-        await asyncio.sleep(0)
+        await asyncio.sleep(max(0, sample_s - (monotonic_ns() - started) / 1e9))
     print(f"Completed counting revolutions for servo {servo.id}.")
 
 async def wait(finish_event, timeout):
@@ -305,7 +315,7 @@ class Blinds:
         def position(self, value):
             self._position = value
 
-        async def operate(self, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, count_lambda, timeout):
+        async def operate(self, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
             if get_pin_value(stop_pin):
                 print("Already at stopped state.")
                 return
@@ -360,7 +370,7 @@ class Blinds:
                 tasks.append(asyncio.create_task(
                     count_revolutions(self._lift_servo,
                                         finish_event,
-                                        count_lambda,
+                                        counting_up,
                                         handle_count)))
 
                 wait_task = asyncio.create_task(
@@ -406,7 +416,7 @@ class Blinds:
                                 self._max_revolutions,                      # Stop when max reached
                                 os.getenv("close_approach_speed", 300),    # Approach speed
                                 os.getenv("close_approach_revs", 10),       # Approach revolutions
-                                lambda old, new: new > old,                 # Count revolution when position flips from big to small value
+                                False,                                      # The servo angle counts down while closing
                                 os.getenv("close_timeout", 45))                                         # Timeout
             await self.drive_tilt(self._tilt)
             self._position = Blinds.POSITION_DOWN
@@ -423,7 +433,7 @@ class Blinds:
                                 self._max_revolutions,                      # Stop when max reached
                                 -os.getenv("open_approach_speed", 300),      # Approach speed
                                 os.getenv("open_approach_revs", 7),         # Approach revolutions
-                                lambda old, new: new < old,                 # Count revolution when position flips from small to big value
+                                True,                                       # The servo angle counts up while opening
                                 os.getenv("open_timeout", 45))              # Timeout
             self._position = Blinds.POSITION_UP
             self.report_state()
