@@ -1,4 +1,5 @@
 from discovery import HADiscovery
+import servo_health
 
 
 def blinds_discovery(device_name, mac=None):
@@ -46,6 +47,16 @@ def add_components(disc):
         "name": "Reconnects",
         "entity_category": "diagnostic",
         "state_class": "measurement",
+    })
+    # One retained JSON message: the health for the state, and each servo's
+    # figures for the attributes.
+    disc.add_component("servo_health", "sensor", {
+        "name": "Servo health",
+        "entity_category": "diagnostic",
+        "device_class": "enum",
+        "options": list(servo_health.HEALTHS),
+        "value_template": "{{ value_json.health }}",
+        "json_attributes_topic": disc.topic("servo_health", "state"),
     })
     # Dropped entities. The removals stay in every payload for good, so they
     # take effect whichever blind boots first and after any rollback.

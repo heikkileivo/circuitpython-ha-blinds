@@ -68,6 +68,20 @@ class BlindsDiscoveryTest(unittest.TestCase):
         self.assertEqual(reconnects["state_class"], "measurement")
         self.assertEqual(reconnects["state_topic"], "blinds_f412fa448000/reconnects/state")
 
+    def test_servo_health_is_a_diagnostic_enum_with_its_attributes_on_its_state_topic(self):
+        # One JSON message carries both: the health for the state, the
+        # per-servo figures for the attributes.
+        health = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_servo_health"]
+
+        self.assertEqual(health["p"], "sensor")
+        self.assertEqual(health["name"], "Servo health")
+        self.assertEqual(health["entity_category"], "diagnostic")
+        self.assertEqual(health["device_class"], "enum")
+        self.assertCountEqual(health["options"], ["ok", "no_reply", "error"])
+        self.assertEqual(health["state_topic"], "blinds_f412fa448000/servo_health/state")
+        self.assertEqual(health["value_template"], "{{ value_json.health }}")
+        self.assertEqual(health["json_attributes_topic"], health["state_topic"])
+
 
 if __name__ == "__main__":
     unittest.main()

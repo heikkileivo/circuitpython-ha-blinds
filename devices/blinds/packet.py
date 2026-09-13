@@ -42,6 +42,7 @@ class Address:
     PRESENT_LOAD_H = 61
     PRESENT_VOLTAGE = 62
     PRESENT_TEMPERATURE = 63
+    STATUS = 65
     MOVING = 66
     PRESENT_CURRENT_L = 69
     PRESENT_CURRENT_H = 70
@@ -123,6 +124,12 @@ class Reader:
         count = self.uart.in_waiting
         if count:
             self.uart.read(count)
+
+    def ping(self, scs_id):
+        """Ping a servo. Returns the reply's ERROR byte, or None if no good
+        reply came."""
+        reply = self._transaction(scs_id, Instruction.PING, (), 0)
+        return None if reply is None else reply[0]
 
     def read(self, scs_id, address, n):
         """Read n bytes from address onwards in one transaction. Returns
