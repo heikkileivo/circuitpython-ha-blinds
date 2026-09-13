@@ -33,16 +33,24 @@ class ServoRead:
         self.uart_errors = uart_errors
 
 
-def boot_reinit(reader):
+def stop_servos(reader):
     """Stop both servos, which a controller reset leaves doing whatever
-    they were doing. Returns the lift and tilt servos' health reads."""
+    they were doing. Returns whether the lift's and the tilt's stops were
+    confirmed."""
     # Duty 0 first: it stops a stalled lift at once. Torque off then leaves
     # both limp, and is written even if the duty wasn't confirmed.
     lift_duty_0 = _write_zero(reader, LIFT_ID, Address.GOAL_TIME_L, 2)
     lift_limp = _write_zero(reader, LIFT_ID, Address.TORQUE_ENABLE, 1)
     tilt_limp = _write_zero(reader, TILT_ID, Address.TORQUE_ENABLE, 1)
-    return (_health_read(reader, LIFT_ID, lift_duty_0 and lift_limp),
-            _health_read(reader, TILT_ID, tilt_limp))
+    return lift_duty_0 and lift_limp, tilt_limp
+
+
+def boot_reinit(reader):
+    """Stop both servos, then read their health. Returns the lift and tilt
+    servos' health reads."""
+    lift_stop_confirmed, tilt_stop_confirmed = stop_servos(reader)
+    return (_health_read(reader, LIFT_ID, lift_stop_confirmed),
+            _health_read(reader, TILT_ID, tilt_stop_confirmed))
 
 
 def _health_read(reader, scs_id, stop_confirmed):

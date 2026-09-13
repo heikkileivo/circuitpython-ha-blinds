@@ -149,9 +149,10 @@ def output_mem():
 
 
 async def main():
-    # A controller reset leaves the servos doing whatever they were doing, so
-    # stop them before anything else. The health read is published once
-    # connected.
+    # A controller reset leaves the servos doing whatever they were doing.
+    # On a hard reset boot.py has stopped them already. Stop them again,
+    # which also covers a soft reload, and read their health, which is
+    # published once connected.
     uart = busio.UART(board.TX,
                             board.RX,
                             baudrate=250000,

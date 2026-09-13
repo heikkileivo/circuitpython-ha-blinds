@@ -8,7 +8,7 @@ PRESENT_VOLTAGE reads as 85 (0.1 V units), and the servos sat at about 21 °C.
 import unittest
 
 from packet import Address, Instruction, Reader, checksum
-from servo_health import ServoRead, boot_reinit, classify, health_message
+from servo_health import ServoRead, boot_reinit, classify, health_message, stop_servos
 
 # MQTT_ATTRIBUTES_BLOCKED in homeassistant/components/mqtt/entity.py (dev,
 # 2026-09-13), with its enum members spelt out.
@@ -196,6 +196,18 @@ class BootReinitTest(unittest.TestCase):
 
         self.assertFalse(lift_read.stop_confirmed)
         self.assertTrue(tilt_read.stop_confirmed)
+
+    def test_the_stop_alone_reports_which_servos_it_confirmed_without_a_health_read(self):
+        # boot.py runs just the stop, before the web workflow's Wi-Fi connect.
+        lift = FakeServo(1, duty=800, torque=1, ignored_writes=100)
+        tilt = FakeServo(2, torque=1)
+        bus = FakeBus(lift, tilt)
+
+        confirmed = stop_servos(Reader(bus))
+
+        self.assertEqual(confirmed, (False, True))
+        self.assertEqual(tilt.torque, 0)
+        self.assertNotIn(Instruction.PING, [request[1] for request in bus.requests])
 
     def test_the_health_read_reaches_the_message(self):
         # The lift warmed and pulled the supply down; the tilt reports
