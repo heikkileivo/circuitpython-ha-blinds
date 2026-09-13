@@ -1,5 +1,6 @@
 from packet import Address
 from revolutions import RevolutionCounter
+from servo_health import MoveFigures
 import stall
 from time import monotonic_ns, sleep
 import microcontroller
@@ -35,6 +36,7 @@ class Servo:
         self._u = 0                 # Previous Voltage
         self._t = 0                 # Previous Temperature
         self._duty = 0              # Duty last commanded
+        self.move = MoveFigures()   # This move's figures, fed by every sample
 
     @property
     def id(self):
@@ -107,8 +109,14 @@ class Servo:
 
     @property
     def angle_and_speed(self):
-        """The servo angle and PRESENT_SPEED in one read, or None."""
-        return self._reader.read_angle_and_speed(self._id)
+        """The servo angle and PRESENT_SPEED in one read, or None. The same
+        read feeds the load and supply voltage to the move's figures."""
+        sample = self._reader.read_motion(self._id)
+        if sample is None:
+            return None
+        angle, speed, load, voltage = sample
+        self.move.feed(voltage, load)
+        return angle, speed
 
 
     @property
@@ -140,7 +148,14 @@ class Servo:
 
     @property
     def is_moving(self):
-        return self._reader.read_1_byte(self._id, Address.MOVING) == 1
+        """Whether the servo is moving, False if it didn't reply. The same
+        read feeds the load and supply voltage to the move's figures."""
+        sample = self._reader.read_moving(self._id)
+        if sample is None:
+            return False
+        load, voltage, moving = sample
+        self.move.feed(voltage, load)
+        return moving
 
     def read_value(self, address, previous_value):
         value = self._reader.read_2_bytes(self._id, address)
@@ -258,11 +273,13 @@ class Blinds:
         POSITION_MOVING_UP = 3
         POSITION_MOVING_DOWN = 4
 
-        def __init__(self, reader, update_callback, on_opened, up_pin, down_pin, tilt_scale):
+        def __init__(self, reader, update_callback, on_opened, on_moved, up_pin, down_pin, tilt_scale):
             self._position = Blinds.POSITION_DOWN
             self._reader = reader
             self._update_callback = update_callback
             self._on_opened = on_opened
+            self._on_moved = on_moved
+            self._moves = 0             # Moves under way, tilt-only ones included
             self._lift_servo = Servo(1, reader)
             self._tilt_servo = Servo(2, reader, scale=tilt_scale)
             self._down_pin = down_pin
@@ -286,7 +303,17 @@ class Blinds:
         def tilt(self, value):
             self._tilt = value
             if self._position == Blinds.POSITION_DOWN:
-                asyncio.create_task(self.drive_tilt(self._tilt))
+                # A tilt-only move.
+                asyncio.create_task(self._as_move(self.drive_tilt(self._tilt)))
+
+        async def _as_move(self, drive):
+            """Await a coroutine that drives the servos, as one move. When
+            it ends, on_moved gets the move's figures."""
+            self._begin_move()
+            try:
+                await drive
+            finally:
+                self._end_move()
 
         @property
         def opened_count(self):
@@ -314,6 +341,31 @@ class Blinds:
         @property
         def is_moving(self):
             return self._position in [Blinds.POSITION_MOVING_UP, Blinds.POSITION_MOVING_DOWN]
+
+        @property
+        def in_move(self):
+            """Whether a move is driving either servo, a tilt-only one
+            included. is_moving only covers an open or close."""
+            return self._moves > 0
+
+        @property
+        def move_figures(self):
+            """The lift and tilt servos' figures from the move under way, or
+            else the last one."""
+            return self._lift_servo.move, self._tilt_servo.move
+
+        def _begin_move(self):
+            # Moves can overlap, as each tilt command starts its own. The
+            # first starts fresh figures, and the last to end reports them.
+            if not self._moves:
+                self._lift_servo.move = MoveFigures()
+                self._tilt_servo.move = MoveFigures()
+            self._moves += 1
+
+        def _end_move(self):
+            self._moves -= 1
+            if not self._moves:
+                self._on_moved(self)
 
         @property
         def position(self):
@@ -415,6 +467,9 @@ class Blinds:
                 # Report state
 
         async def close(self):
+            await self._as_move(self._close())
+
+        async def _close(self):
             print("Closing blinds...")
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
@@ -432,6 +487,9 @@ class Blinds:
             print("Completed closing blinds.")
 
         async def open(self):
+            await self._as_move(self._open())
+
+        async def _open(self):
             print("Opening blinds...")
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()

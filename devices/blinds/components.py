@@ -58,6 +58,17 @@ def add_components(disc):
         "value_template": "{{ value_json.health }}",
         "json_attributes_topic": disc.topic("servo_health", "state"),
     })
+    # The lowest supply voltage either servo reported during the last move.
+    # Also in servo_health's attributes, but a sensor of its own gets graphs
+    # and long-term statistics.
+    disc.add_component("servo_min_voltage", "sensor", {
+        "name": "Servo min voltage",
+        "entity_category": "diagnostic",
+        "device_class": "voltage",
+        "unit_of_measurement": "V",
+        "state_class": "measurement",
+        "suggested_display_precision": 1,
+    })
     # Dropped entities. The removals stay in every payload for good, so they
     # take effect whichever blind boots first and after any rollback.
     disc.remove_component("uptime", "sensor")

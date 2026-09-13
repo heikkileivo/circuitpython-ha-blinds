@@ -119,23 +119,44 @@ class ReaderTest(unittest.TestCase):
         self.assertEqual(reader.read_2_bytes(1, Address.PRESENT_POSITION_L), 683)
         self.assertEqual(reader.read_1_byte(1, Address.PRESENT_TEMPERATURE), 31)
 
-    def test_the_servo_angle_and_speed_come_from_one_block_read(self):
+    def test_the_lifts_motion_sample_comes_from_one_block_read(self):
         # Closing at duty 800: angle 1000 (03e8), speed -1400. PRESENT_SPEED
-        # is sign and magnitude, with the sign in bit 15 (8578).
-        uart = FakeUart(reply("ffff0106" "00" "03e8" "8578" "10"))
+        # is sign and magnitude, with the sign in bit 15 (8578). The load
+        # reads the commanded duty, with its sign in bit 10 (0320), and the
+        # supply 8.1 V (51).
+        uart = FakeUart(reply("ffff0109" "00" "03e8" "8578" "0320" "51" "99"))
         reader = Reader(uart)
 
-        result = reader.read_angle_and_speed(1)
+        result = reader.read_motion(1)
 
-        self.assertEqual(uart.written, [bytes.fromhex("ffff0104023804bc")])
-        self.assertEqual(result, (1000, -1400))
+        self.assertEqual(uart.written, [bytes.fromhex("ffff0104023807b9")])
+        self.assertEqual(result, (1000, -1400, 800, 81))
+
+    def test_the_head_rail_stall_reads_a_negative_load_and_the_sagging_supply(self):
+        # The bench's head-rail stall, going up at duty -800: angle and speed
+        # 0, the load -800 (0720) and the supply down to 5.8 V (3a).
+        reader = Reader(FakeUart(reply("ffff0109" "00" "0000" "0000" "0720" "3a" "94")))
+
+        self.assertEqual(reader.read_motion(1), (0, 0, -800, 58))
+
+    def test_the_moving_flag_comes_with_the_load_and_supply_in_one_block_read(self):
+        # The tilt servo driving: load -150 (0496), 7.9 V (4f), 22 C,
+        # status 0, moving.
+        uart = FakeUart(reply("ffff0209" "00" "0496" "4f" "16" "00" "00" "01" "f4"))
+        reader = Reader(uart)
+
+        result = reader.read_moving(2)
+
+        self.assertEqual(uart.written, [bytes.fromhex("ffff0204023c07b4")])
+        self.assertEqual(result, (-150, 79, True))
 
     def test_the_register_helpers_return_none_without_a_good_reply(self):
         reader = Reader(FakeUart())
 
         self.assertIsNone(reader.read_2_bytes(1, Address.PRESENT_POSITION_L))
         self.assertIsNone(reader.read_1_byte(1, Address.PRESENT_TEMPERATURE))
-        self.assertIsNone(reader.read_angle_and_speed(1))
+        self.assertIsNone(reader.read_motion(1))
+        self.assertIsNone(reader.read_moving(2))
 
     def test_a_ping_returns_the_error_byte(self):
         uart = FakeUart(reply("ffff010200fc"))

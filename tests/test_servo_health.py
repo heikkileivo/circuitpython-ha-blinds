@@ -8,7 +8,8 @@ PRESENT_VOLTAGE reads as 85 (0.1 V units), and the servos sat at about 21 °C.
 import unittest
 
 from packet import Address, Instruction, Reader, checksum
-from servo_health import ServoRead, boot_reinit, classify, health_message, stop_servos
+from servo_health import (MoveFigures, ServoRead, boot_reinit, classify, health_message,
+                          idle_reads, servo_min_voltage, stop_servos)
 
 # MQTT_ATTRIBUTES_BLOCKED in homeassistant/components/mqtt/entity.py (dev,
 # 2026-09-13), with its enum members spelt out.
@@ -75,10 +76,25 @@ class HealthMessageTest(unittest.TestCase):
         message = health_message(answered(voltage=74, temperature=31, uart_errors=2),
                                  ServoRead(stop_confirmed=False, uart_errors=9))
 
+        # At boot there's been no move yet.
         self.assertEqual(message["lift"], {"health": "ok", "temperature": 31,
-                                           "idle_voltage": 7.4, "uart_errors": 2})
+                                           "idle_voltage": 7.4, "min_voltage": None,
+                                           "peak_load": None, "uart_errors": 2})
         self.assertEqual(message["tilt"], {"health": "no_reply", "temperature": None,
-                                           "idle_voltage": None, "uart_errors": 9})
+                                           "idle_voltage": None, "min_voltage": None,
+                                           "peak_load": None, "uart_errors": 9})
+
+    def test_after_a_move_each_servo_has_its_lowest_supply_and_peak_load(self):
+        # The lift stalled at the head rail going up; the tilt drove first.
+        lift_move = moved((85, -300), (58, -800), (72, -800))
+        tilt_move = moved((81, 150), (79, -150))
+
+        message = health_message(answered(), answered(), lift_move, tilt_move)
+
+        self.assertEqual((message["lift"]["min_voltage"], message["lift"]["peak_load"]),
+                         (5.8, 800))
+        self.assertEqual((message["tilt"]["min_voltage"], message["tilt"]["peak_load"]),
+                         (7.9, 150))
 
     def test_no_attribute_is_one_home_assistant_blocks(self):
         # HA drops a JSON attribute that shadows an entity property. The
@@ -86,6 +102,31 @@ class HealthMessageTest(unittest.TestCase):
         message = health_message(answered(), answered())
 
         self.assertEqual(set(message) & BLOCKED_ATTRIBUTES, set())
+
+
+def moved(*samples):
+    """One servo's figures from a move, fed its samples as (supply voltage
+    in 0.1 V, load)."""
+    move = MoveFigures()
+    for voltage, load in samples:
+        move.feed(voltage, load)
+    return move
+
+
+class ServoMinVoltageTest(unittest.TestCase):
+    def test_it_is_the_lowest_supply_either_servo_reported_during_the_move(self):
+        # The bench's head-rail stall pulled the supply from 8.5 V to 5.8 V.
+        lift = moved((85, -300), (74, -800), (58, -800), (72, -800))
+        tilt = moved((81, 150), (79, -150))
+
+        self.assertEqual(servo_min_voltage(lift, tilt), 5.8)
+        self.assertEqual(servo_min_voltage(moved((85, 0)), tilt), 7.9)
+
+    def test_a_servo_that_reported_nothing_is_left_out(self):
+        # A tilt-only move doesn't sample the lift. With no sample at all
+        # there's no value to publish.
+        self.assertEqual(servo_min_voltage(MoveFigures(), moved((79, 150))), 7.9)
+        self.assertIsNone(servo_min_voltage(MoveFigures(), MoveFigures()))
 
 
 class FakeServo:
@@ -97,7 +138,7 @@ class FakeServo:
     """
 
     def __init__(self, scs_id, duty=0, torque=0, voltage=85, temperature=21,
-                 status=0, error=0, ignored_writes=0, missed_pings=0,
+                 status=0, moving=0, error=0, ignored_writes=0, missed_pings=0,
                  answers=True):
         self.id = scs_id
         self.memory = bytearray(Address.PRESENT_CURRENT_H + 1)
@@ -108,6 +149,7 @@ class FakeServo:
         self.memory[Address.PRESENT_VOLTAGE] = voltage
         self.memory[Address.PRESENT_TEMPERATURE] = temperature
         self.memory[Address.STATUS] = status
+        self.memory[Address.MOVING] = moving
         self.error = error
         self.ignored_writes = ignored_writes
         self.missed_pings = missed_pings
@@ -219,7 +261,8 @@ class BootReinitTest(unittest.TestCase):
 
         self.assertEqual(message["health"], "error")
         self.assertEqual(message["lift"], {"health": "ok", "temperature": 31,
-                                           "idle_voltage": 7.4, "uart_errors": 0})
+                                           "idle_voltage": 7.4, "min_voltage": None,
+                                           "peak_load": None, "uart_errors": 0})
         self.assertEqual(message["tilt"]["health"], "error")
 
     def test_a_missed_ping_is_retried(self):
@@ -241,6 +284,41 @@ class BootReinitTest(unittest.TestCase):
         self.assertEqual(message["health"], "no_reply")
         self.assertEqual(message["lift"]["health"], "ok")
         self.assertEqual(message["tilt"]["temperature"], None)
+
+
+class IdleReadTest(unittest.TestCase):
+    def test_after_a_move_the_message_has_the_idle_read_and_the_moves_figures(self):
+        # The supply is back up to 8.4 V after the head-rail stall, and the
+        # lift has warmed.
+        lift = FakeServo(1, voltage=84, temperature=27)
+
+        lift_read, tilt_read = idle_reads(Reader(FakeBus(lift, FakeServo(2))))
+        message = health_message(lift_read, tilt_read, moved((58, -800)), None)
+
+        self.assertEqual(message["health"], "ok")
+        self.assertEqual(message["lift"], {"health": "ok", "temperature": 27,
+                                           "idle_voltage": 8.4, "min_voltage": 5.8,
+                                           "peak_load": 800, "uart_errors": 0})
+
+    def test_a_servo_still_moving_at_the_idle_read_is_error(self):
+        # The idle read runs with neither servo driving, so a servo that
+        # still moves wasn't stopped.
+        lift_read, tilt_read = idle_reads(Reader(FakeBus(FakeServo(1, moving=1), FakeServo(2))))
+
+        self.assertEqual((classify(lift_read), classify(tilt_read)), ("error", "ok"))
+
+    def test_a_servo_that_doesnt_answer_the_idle_read_is_no_reply(self):
+        _, tilt_read = idle_reads(Reader(FakeBus(FakeServo(1), FakeServo(2, answers=False))))
+
+        self.assertEqual(classify(tilt_read), "no_reply")
+
+    def test_the_idle_read_writes_nothing(self):
+        # Unlike the boot re-init, it leaves the servos as the move left them.
+        bus = FakeBus(FakeServo(1), FakeServo(2))
+
+        idle_reads(Reader(bus))
+
+        self.assertNotIn(Instruction.WRITE, [request[1] for request in bus.requests])
 
 
 if __name__ == "__main__":

@@ -82,6 +82,19 @@ class BlindsDiscoveryTest(unittest.TestCase):
         self.assertEqual(health["value_template"], "{{ value_json.health }}")
         self.assertEqual(health["json_attributes_topic"], health["state_topic"])
 
+    def test_servo_min_voltage_is_a_diagnostic_voltage_measurement(self):
+        # A sensor of its own, so HA graphs it and keeps long-term statistics.
+        voltage = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_servo_min_voltage"]
+
+        self.assertEqual(voltage["p"], "sensor")
+        self.assertEqual(voltage["name"], "Servo min voltage")
+        self.assertEqual(voltage["entity_category"], "diagnostic")
+        self.assertEqual(voltage["device_class"], "voltage")
+        self.assertEqual(voltage["unit_of_measurement"], "V")
+        self.assertEqual(voltage["state_class"], "measurement")
+        self.assertEqual(voltage["suggested_display_precision"], 1)
+        self.assertEqual(voltage["state_topic"], "blinds_f412fa448000/servo_min_voltage/state")
+
 
 if __name__ == "__main__":
     unittest.main()
