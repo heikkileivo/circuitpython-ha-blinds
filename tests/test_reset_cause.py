@@ -2,10 +2,10 @@
 published, when the stored one is cleared, and the one restart after a
 watchdog reset.
 
-Sleep memory is a bytearray here. Every real reset wipes it, and a deep
-sleep and a soft reload keep it. The chip's reasons are the names of
-microcontroller.ResetReason's members in CircuitPython 9.1
-(shared-bindings/microcontroller/ResetReason.c).
+NVM is a bytearray here. It survives every reset, so a stored cause counts
+only after a software reset, which is how every firmware-triggered restart
+happens. The chip's reasons are the names of microcontroller.ResetReason's
+members in CircuitPython 9.1 (shared-bindings/microcontroller/ResetReason.c).
 """
 
 import unittest
@@ -16,33 +16,33 @@ CHIP_REASONS = ("POWER_ON", "BROWNOUT", "SOFTWARE", "DEEP_SLEEP_ALARM", "RESET_P
                 "WATCHDOG", "UNKNOWN", "RESCUE_DEBUG")
 
 
-def boot(memory, chip_reason):
+def boot(nvm, chip_reason):
     """One boot as code.py runs it: decide, write what the decision says to
-    sleep memory, and return the cause to publish and whether to restart."""
-    cause, restart, to_write = boot_decision(bytes(memory[0:2]), chip_reason)
+    NVM, and return the cause to publish and whether to restart."""
+    cause, restart, to_write = boot_decision(bytes(nvm[0:2]), chip_reason)
     if to_write is not None:
-        memory[0:2] = to_write
+        nvm[0:2] = to_write
     return cause, restart
 
 
 class WatchdogRestartTest(unittest.TestCase):
     def test_a_watchdog_reset_restarts_once_then_publishes_watchdog(self):
-        memory = bytearray(2)
+        nvm = bytearray(2)
 
-        self.assertEqual(boot(memory, "WATCHDOG"), (None, True))
-        # The deep sleep keeps sleep memory, and the chip wakes with an alarm.
-        self.assertEqual(boot(memory, "DEEP_SLEEP_ALARM"), ("watchdog", False))
+        self.assertEqual(boot(nvm, "WATCHDOG"), (None, True))
+        # The restart is a software reset, which keeps NVM.
+        self.assertEqual(boot(nvm, "SOFTWARE"), ("watchdog", False))
         # Cleared, so a soft reload after it publishes the chip's reason.
-        self.assertEqual(boot(memory, "DEEP_SLEEP_ALARM"), ("deep_sleep_alarm", False))
+        self.assertEqual(boot(nvm, "SOFTWARE"), ("software", False))
 
-    def test_a_faked_deep_sleep_still_restarts_only_once(self):
-        # With USB connected, CircuitPython fakes the deep sleep without a
-        # reset, so the chip still says watchdog. The magic alone stops a
-        # loop.
-        memory = bytearray(2)
 
-        self.assertEqual(boot(memory, "WATCHDOG"), (None, True))
-        self.assertEqual(boot(memory, "WATCHDOG"), ("watchdog", False))
+    def test_a_watchdog_reset_with_a_stale_cause_still_restarts_once(self):
+        # The stale MQTT escalation doesn't count after a watchdog reset: the
+        # restart stores watchdog over it.
+        nvm = bytearray((0xB1, 3))
+
+        self.assertEqual(boot(nvm, "WATCHDOG"), (None, True))
+        self.assertEqual(boot(nvm, "SOFTWARE"), ("watchdog", False))
 
 
 class ChipReasonTest(unittest.TestCase):
@@ -75,11 +75,31 @@ class StoredCauseTest(unittest.TestCase):
                   4: "restart_loop", 5: "watchdog"}
         for code, cause in causes.items():
             with self.subTest(cause=cause):
-                memory = bytearray((0xB1, code))
+                nvm = bytearray((0xB1, code))
 
-                self.assertEqual(boot(memory, "DEEP_SLEEP_ALARM"), (cause, False))
+                self.assertEqual(boot(nvm, "SOFTWARE"), (cause, False))
                 # Both bytes zeroed, so a soft reload doesn't publish it again.
-                self.assertEqual(memory, bytearray(2))
+                self.assertEqual(nvm, bytearray(2))
+
+    def test_nothing_is_written_when_nothing_is_stored(self):
+        # NVM is flash, so a boot with nothing stored leaves it alone, blank
+        # (zeros or 0xFF) or cleared.
+        for stored in (bytes(2), b"\xff\xff"):
+            for reason in ("POWER_ON", "SOFTWARE", "DEEP_SLEEP_ALARM", "BROWNOUT"):
+                with self.subTest(stored=stored, reason=reason):
+                    self.assertIsNone(boot_decision(stored, reason)[2])
+
+    def test_a_stored_cause_found_after_any_other_reset_is_stale(self):
+        # For example, the power went between storing an MQTT escalation and
+        # the reset. The chip's reason is published, and the record cleared.
+        expected = {"POWER_ON": "power_on", "BROWNOUT": "brownout",
+                    "RESET_PIN": "reset_pin", "DEEP_SLEEP_ALARM": "deep_sleep_alarm"}
+        for reason, cause in expected.items():
+            with self.subTest(reason=reason):
+                nvm = bytearray((0xB1, 3))
+
+                self.assertEqual(boot(nvm, reason), (cause, False))
+                self.assertEqual(nvm, bytearray(2))
 
 
 if __name__ == "__main__":
