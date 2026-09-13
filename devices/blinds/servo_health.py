@@ -1,7 +1,10 @@
 """Servo health: whether the blind's servos answer and report no error, as
-published to Home Assistant, and the boot re-init that stops the servos and
-reads it. The classification is pure, and the re-init only needs a Reader,
-so the host tests run both, the re-init on a fake servo bus."""
+published to Home Assistant, with the servo diagnostics behind it: each
+servo's lowest supply voltage and peak load during a move, and its idle
+voltage and temperature. Also the boot re-init that stops the servos, and
+the health reads at boot and while idle. The classification and the move
+figures are pure, and the reads only need a Reader, so the host tests run
+them all, the reads on a fake servo bus."""
 
 from packet import Address
 
@@ -20,8 +23,8 @@ HEALTHS = (OK, ERROR, NO_REPLY)
 
 
 class ServoRead:
-    """One servo's health read at boot. error is None when the servo gave no
-    good reply."""
+    """One servo's health read, at boot or while idle. error is None when
+    the servo gave no good reply."""
 
     def __init__(self, stop_confirmed, error=None, voltage=None, temperature=None,
                  status=None, uart_errors=0):
@@ -31,6 +34,33 @@ class ServoRead:
         self.temperature = temperature
         self.status = status
         self.uart_errors = uart_errors
+
+
+class MoveFigures:
+    """One servo's figures during one move: the lowest supply voltage it
+    reported, in 0.1 V, and its peak load, whichever way it drove. Both are
+    None until a sample comes."""
+
+    def __init__(self):
+        self.min_voltage = None
+        self.peak_load = None
+
+    def feed(self, voltage, load):
+        """Take one sample: the supply voltage in 0.1 V, and the load."""
+        if self.min_voltage is None or voltage < self.min_voltage:
+            self.min_voltage = voltage
+        load = abs(load)
+        if self.peak_load is None or load > self.peak_load:
+            self.peak_load = load
+
+
+def servo_min_voltage(lift_move, tilt_move):
+    """The servo_min_voltage sensor's value in V: the lowest supply voltage
+    either servo reported during the move, or None if neither reported
+    one."""
+    voltages = [move.min_voltage for move in (lift_move, tilt_move)
+                if move.min_voltage is not None]
+    return _volts(min(voltages)) if voltages else None
 
 
 def stop_servos(reader):
@@ -51,6 +81,14 @@ def boot_reinit(reader):
     lift_stop_confirmed, tilt_stop_confirmed = stop_servos(reader)
     return (_health_read(reader, LIFT_ID, lift_stop_confirmed),
             _health_read(reader, TILT_ID, tilt_stop_confirmed))
+
+
+def idle_reads(reader):
+    """Read both servos' health while neither is driving: after a move has
+    settled, and now and then while the blind is idle. Returns the lift and
+    tilt servos' health reads. There's no stop of their own to confirm, and
+    the moving flag is only logged, as at boot."""
+    return _health_read(reader, LIFT_ID, True), _health_read(reader, TILT_ID, True)
 
 
 def _health_read(reader, scs_id, stop_confirmed):
@@ -101,21 +139,28 @@ def classify(read):
     return OK
 
 
-def health_message(lift, tilt):
+def health_message(lift, tilt, lift_move=None, tilt_move=None):
     """The servo_health entity's JSON message, from the lift and tilt
-    servos' health reads: the health, the worse of the two, which the entity
-    shows, and each servo's own figures as attributes."""
+    servos' health reads and their figures from the last move, if there's
+    been one: the health, the worse of the two, which the entity shows, and
+    each servo's own figures as attributes."""
     lift_health = classify(lift)
     tilt_health = classify(tilt)
     return {"health": max(lift_health, tilt_health, key=HEALTHS.index),
-            "lift": _attributes(lift, lift_health),
-            "tilt": _attributes(tilt, tilt_health)}
+            "lift": _attributes(lift, lift_health, lift_move or MoveFigures()),
+            "tilt": _attributes(tilt, tilt_health, tilt_move or MoveFigures())}
 
 
-def _attributes(read, health):
-    # PRESENT_VOLTAGE is in 0.1 V. The read follows the boot stop, so the
-    # supply is idle.
+def _attributes(read, health, move):
+    # PRESENT_VOLTAGE is in 0.1 V. The health read is only taken with both
+    # servos stopped, so its voltage is the idle supply.
     return {"health": health,
             "temperature": read.temperature,
-            "idle_voltage": None if read.voltage is None else read.voltage / 10,
+            "idle_voltage": _volts(read.voltage),
+            "min_voltage": _volts(move.min_voltage),
+            "peak_load": move.peak_load,
             "uart_errors": read.uart_errors}
+
+
+def _volts(voltage):
+    return None if voltage is None else voltage / 10

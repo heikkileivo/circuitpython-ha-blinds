@@ -69,6 +69,13 @@ def reply_problem(reply, scs_id, n):
     return None
 
 
+def _load(high, low):
+    """PRESENT_LOAD from its two bytes: sign and magnitude, with the sign in
+    bit 10. In wheel mode it reads the commanded duty."""
+    load = ((high & 0x03) << 8) | low
+    return -load if high & 0x04 else load
+
+
 class Reader:
     BAUD_RATE_1M = 0
     BAUD_RATE_0_5M = 1
@@ -165,17 +172,28 @@ class Reader:
         h, l = reply[1]
         return (h << 8) | l
 
-    def read_angle_and_speed(self, scs_id):
-        """The servo angle and PRESENT_SPEED in one block read, or None if
-        no good reply came. The speed is sign and magnitude, with the sign in
-        bit 15."""
-        reply = self.read(scs_id, Address.PRESENT_POSITION_L, 4)
+    def read_motion(self, scs_id):
+        """The servo angle, PRESENT_SPEED, PRESENT_LOAD and PRESENT_VOLTAGE
+        (0.1 V) in one block read of 56-62, or None if no good reply came.
+        The speed is sign and magnitude with the sign in bit 15, the load
+        with the sign in bit 10."""
+        reply = self.read(scs_id, Address.PRESENT_POSITION_L, 7)
         if reply is None:
             return None
         data = reply[1]
         angle = (data[0] << 8) | data[1]
         speed = ((data[2] & 0x7F) << 8) | data[3]
-        return angle, (-speed if data[2] & 0x80 else speed)
+        return (angle, -speed if data[2] & 0x80 else speed,
+                _load(data[4], data[5]), data[6])
+
+    def read_moving(self, scs_id):
+        """PRESENT_LOAD, PRESENT_VOLTAGE (0.1 V) and whether the servo is
+        moving, in one block read of 60-66, or None if no good reply came."""
+        reply = self.read(scs_id, Address.PRESENT_LOAD_L, 7)
+        if reply is None:
+            return None
+        data = reply[1]
+        return _load(data[0], data[1]), data[2], data[6] == 1
 
     def set_position(self, scs_id, position):
         return self.write_word(scs_id, Address.GOAL_POSITION_L, position)

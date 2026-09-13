@@ -28,6 +28,12 @@ except Exception as e:
 # idle a call starts about every 0.5 s.
 MQTT_SERVICE_SLEEP_S = 0.25
 
+# After a move, the supply gets this long to recover before the idle read.
+SERVO_SETTLE_S = 2
+# While the blind is idle, the servos' health is read and published this
+# often, so the idle voltage and temperature stay current.
+SERVO_IDLE_READ_S = 600
+
 # The cover state HA is told for each of the blind's Blinds.POSITION_* values.
 COVER_STATES = {Blinds.POSITION_UNKNOWN: "unknown",
                 Blinds.POSITION_MOVING_DOWN: "closing",
@@ -133,6 +139,15 @@ async def status_blinker(blinds):
         else:
             await asyncio.sleep(1)
 
+async def read_servos_while_idle(blinds, publish_servo_health):
+    """Read and publish the servos' health every SERVO_IDLE_READ_S while
+    the blind is idle. A move skips it, as the move's own idle read follows."""
+    while True:
+        await asyncio.sleep(SERVO_IDLE_READ_S)
+        if not blinds.in_move:
+            publish_servo_health()
+
+
 def output_mem():
     # Show available memory
     print("Memory Info - gc.mem_free()")
@@ -160,9 +175,15 @@ async def main():
 
     reader = Reader(uart)
     reader.flush_buffer()
-    servo_reads = servo_health.boot_reinit(reader)
-    health_json = json.dumps(servo_health.health_message(*servo_reads), separators=(",", ":"))
-    print(f"Servo health: {health_json}")
+
+    def health_json(*figures):
+        return json.dumps(servo_health.health_message(*figures), separators=(",", ":"))
+
+    # The latest servo_health message and servo_min_voltage, which every
+    # connect republishes. Until the first move there's only the boot read.
+    servo_states = {"servo_health": health_json(*servo_health.boot_reinit(reader)),
+                    "servo_min_voltage": None}
+    print(f"Servo health: {servo_states['servo_health']}")
 
     output_mem()
 
@@ -196,7 +217,9 @@ async def main():
         client.subscribe([(topic, 0) for topic in topics])
         for topic, value in state_messages(blinds):
             client.publish(topic, str(value), retain=True)
-        client.publish(disc.topic("servo_health", "state"), health_json, retain=True)
+        for entity, value in servo_states.items():
+            if value is not None:
+                client.publish(disc.topic(entity, "state"), str(value), retain=True)
 
     def on_message(client, topic, message):
         if topic == disc.topic("cover", "set"):
@@ -248,9 +271,39 @@ async def main():
     def on_opened(blinds):
         publish_if_connected(mqtt, disc.topic("opened_count", "state"), blinds.opened_count, retain=True)
 
+    # The lift and tilt servos' figures from the last move.
+    last_moves = (None, None)
+
+    def publish_servo_health():
+        # Read both servos idle, and publish their health with the last
+        # move's figures.
+        lift_read, tilt_read = servo_health.idle_reads(reader)
+        servo_states["servo_health"] = health_json(lift_read, tilt_read, *last_moves)
+        publish_if_connected(mqtt, disc.topic("servo_health", "state"),
+                             servo_states["servo_health"], retain=True)
+
+    async def publish_servo_health_settled():
+        # The idle read, once the supply has settled, gives the idle voltage
+        # and the temperature at the move's end.
+        await asyncio.sleep(SERVO_SETTLE_S)
+        # A move that started meanwhile has its own idle read to come, with
+        # its own figures.
+        if not blinds.in_move:
+            publish_servo_health()
+
+    def on_moved(blinds):
+        nonlocal last_moves
+        last_moves = blinds.move_figures
+        min_voltage = servo_health.servo_min_voltage(*last_moves)
+        if min_voltage is not None:
+            servo_states["servo_min_voltage"] = min_voltage
+            publish_if_connected(mqtt, disc.topic("servo_min_voltage", "state"), min_voltage, retain=True)
+        asyncio.create_task(publish_servo_health_settled())
+
     blinds = Blinds(reader,
         report_state,
         on_opened,
+        on_moved,
         board.D1,
         board.D2,
         tilt_scale)
@@ -269,6 +322,7 @@ async def main():
     tasks.append(asyncio.create_task(service_mqtt(mqtt, blinds, socket_timeout)))
     tasks.append(asyncio.create_task(status_blinker(blinds)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
+    tasks.append(asyncio.create_task(read_servos_while_idle(blinds, publish_servo_health)))
 
     await asyncio.gather(*tasks)
 
