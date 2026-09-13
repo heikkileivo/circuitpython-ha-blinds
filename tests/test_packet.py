@@ -119,11 +119,23 @@ class ReaderTest(unittest.TestCase):
         self.assertEqual(reader.read_2_bytes(1, Address.PRESENT_POSITION_L), 683)
         self.assertEqual(reader.read_1_byte(1, Address.PRESENT_TEMPERATURE), 31)
 
+    def test_the_servo_angle_and_speed_come_from_one_block_read(self):
+        # Closing at duty 800: angle 1000 (03e8), speed -1400. PRESENT_SPEED
+        # is sign and magnitude, with the sign in bit 15 (8578).
+        uart = FakeUart(reply("ffff0106" "00" "03e8" "8578" "10"))
+        reader = Reader(uart)
+
+        result = reader.read_angle_and_speed(1)
+
+        self.assertEqual(uart.written, [bytes.fromhex("ffff0104023804bc")])
+        self.assertEqual(result, (1000, -1400))
+
     def test_the_register_helpers_return_none_without_a_good_reply(self):
         reader = Reader(FakeUart())
 
         self.assertIsNone(reader.read_2_bytes(1, Address.PRESENT_POSITION_L))
         self.assertIsNone(reader.read_1_byte(1, Address.PRESENT_TEMPERATURE))
+        self.assertIsNone(reader.read_angle_and_speed(1))
 
     def test_each_servo_keeps_its_own_uart_error_count(self):
         reader = Reader(FakeUart())

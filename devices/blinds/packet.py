@@ -158,6 +158,17 @@ class Reader:
         h, l = reply[1]
         return (h << 8) | l
 
+    def read_angle_and_speed(self, scs_id):
+        """The servo angle and PRESENT_SPEED in one block read, or None if
+        no good reply came. The speed is sign and magnitude, with the sign in
+        bit 15."""
+        reply = self.read(scs_id, Address.PRESENT_POSITION_L, 4)
+        if reply is None:
+            return None
+        data = reply[1]
+        angle = (data[0] << 8) | data[1]
+        speed = ((data[2] & 0x7F) << 8) | data[3]
+        return angle, -speed if data[2] & 0x80 else speed
 
     def set_position(self, scs_id, position):
         return self.write_word(scs_id, Address.GOAL_POSITION_L, position)

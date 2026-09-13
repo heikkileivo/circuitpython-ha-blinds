@@ -42,6 +42,10 @@ _Avoid_: Holding torque, hold, lock
 The fixed top of the blind assembly. Driving into it stalls the lift servo.
 _Avoid_: Top stop, end stop (when meaning the top)
 
+**Stall**:
+The lift servo driven but not turning: a duty is commanded, yet its speed reads about 0 and its servo angle stays frozen. Its own overload protection never trips in wheel mode, so only the firmware stops a stall.
+_Avoid_: Jam, stuck, blocked
+
 **Servo health**:
 Whether a blind's servos answer and report no error, as published to Home Assistant: ok, no reply or error, taken as the worse of the lift and tilt servos.
 _Avoid_: Servo status, servo fault, servo diagnostics (the voltage, temperature and load figures behind it)

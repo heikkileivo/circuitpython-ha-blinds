@@ -1,5 +1,6 @@
 from packet import Address
 from revolutions import RevolutionCounter
+from stall import StallDetector
 from time import monotonic_ns, sleep
 import microcontroller
 import asyncio, digitalio
@@ -33,6 +34,7 @@ class Servo:
         self._l = 0                 # Previous Load
         self._u = 0                 # Previous Voltage
         self._t = 0                 # Previous Temperature
+        self._duty = 0              # Duty last commanded
 
     @property
     def id(self):
@@ -80,6 +82,7 @@ class Servo:
 
     @speed.setter
     def speed(self, value):
+        self._duty = value
         if value < 0:
             value = abs(value) | (1<<10)
         retries = 3
@@ -95,6 +98,17 @@ class Servo:
                     retries -= 1
                 else:
                     raise ServoCommFailure(f"Failed to set servo speed to {value}.")
+
+    @property
+    def commanded_duty(self):
+        """The duty last written through speed, negative for up, whether
+        or not the servo confirmed it."""
+        return self._duty
+
+    @property
+    def angle_and_speed(self):
+        """The servo angle and PRESENT_SPEED in one read, or None."""
+        return self._reader.read_angle_and_speed(self._id)
 
 
     @property
@@ -188,41 +202,34 @@ async def poll_pin(pin, finish_event, callback):
             await asyncio.sleep(0)
     print(f"Completed polling for pin {pin}.")
 
-# How many identical servo angles in a row mean the lift has stopped.
-STOPPED_SAMPLES = 10
-
 async def count_revolutions(servo, finish_event, counting_up, callback):
-    """Sample the lift's servo angle every lift_sample_ms, count its
-    revolutions, and end the move once the angle stops changing."""
+    """Sample the lift's servo angle and speed every lift_sample_ms, count
+    its revolutions, and stop the lift at once if it stalls."""
     sample_s = os.getenv("lift_sample_ms", 50) / 1000
     counter = RevolutionCounter(counting_up)
-    old_position = 0
+    stall = StallDetector(window_ms=os.getenv("stall_window_ms", 150),
+                          max_speed=os.getenv("stall_max_speed", 20),
+                          max_angle_change=os.getenv("stall_max_angle_change", 5),
+                          grace_ms=os.getenv("stall_grace_ms", 300))
     print(f"Counting revolutions for servo {servo.id}...")
-    is_rotating = False
-    stop_counter = STOPPED_SAMPLES
     while True:
         # monotonic() loses precision within hours of uptime; monotonic_ns() doesn't.
         started = monotonic_ns()
-        new_position, _ = servo.position
-        if new_position:
-            if is_rotating:
-                if old_position == new_position:
-                    stop_counter -= 1
-                    if stop_counter == 0:
-                        print("Servo has stopped.")
-                        finish_event.set()
-                        break
-                else:
-                    stop_counter = STOPPED_SAMPLES
-            else:
-                if is_rotating == False:
-                    if old_position and old_position != new_position:
-                        print("Servo started rotating.")
-                        is_rotating = True
-
-            if counter.feed(new_position):
+        sample = servo.angle_and_speed
+        if sample:
+            angle, speed = sample
+            if stall.feed(started // 1000000, angle, speed, servo.commanded_duty):
+                # Stop the lift before anything else. operate()'s stop path
+                # then ends the move.
+                try:
+                    servo.speed = 0
+                except ServoCommFailure as e:
+                    print(f"Failed to stop the stalled lift: {e}")
+                print(f"STALL: the lift's servo angle was frozen for {stall.frozen_ms} ms.")
+                finish_event.set()
+                break
+            if counter.feed(angle):
                 callback(counter.count)
-            old_position = new_position
         if finish_event.is_set():
             break
 
