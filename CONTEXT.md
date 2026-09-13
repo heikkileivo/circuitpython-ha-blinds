@@ -69,11 +69,11 @@ A device's own uptime, which it publishes every 10 s and hears back from the bro
 _Avoid_: Heartbeat, ping (MQTT's own keep-alive probe)
 
 **MQTT escalation**:
-The blind restarting itself because its liveness echo has been missing for 5 minutes. It waits for a move to end first.
+The blind restarting itself because its liveness echo has been missing for the escalation window, 5 minutes by default. It waits for a move to end first.
 _Avoid_: Health reset, MQTT reset
 
 **Restart loop**:
-code.py running `main()` again after it fails. After 3 quick failed runs in a row the blind restarts instead. A run that lasted longer than the MQTT escalation's 5 minutes resets the count.
+code.py running `main()` again after it fails. After a few quick failed runs in a row, 3 by default, the blind restarts instead. A run that lasted longer than the escalation window resets the count.
 _Avoid_: Retry loop, boot loop
 
 **Unresponsive**:

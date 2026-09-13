@@ -41,16 +41,16 @@ MQTT_SERVICE_SLEEP_S = 0.25
 WATCHDOG_TIMEOUT_S = 16
 # One Wi-Fi connect attempt gives up after this long.
 WIFI_CONNECT_TIMEOUT_S = 8
-# The health task feeds the watchdog and checks the escalation this often.
-HEALTH_CHECK_S = 1
+# The watchdog is fed, and the escalation checked, this often.
+WATCHDOG_FEED_S = 1
 # A restart the firmware triggers deep-sleeps this long.
 RESTART_SLEEP_S = 1
-# After a failed run of main(), the next one starts this long later.
-RETRY_S = 10
-# The escalation window: the blind restarts once its liveness echo has been
-# missing this long. A run of main() that lasts longer resets the restart
-# loop's count.
-ESCALATION_MS = os.getenv("mqtt_escalation_s", recovery.WINDOW_MS // 1000) * 1000
+# The restart loop runs main() again this long after it fails.
+RESTART_LOOP_DELAY_S = 10
+# The escalation window, in seconds: the blind restarts once its liveness
+# echo has been missing this long. A run of main() that lasts longer resets
+# the restart loop's count.
+ESCALATION_S = os.getenv("mqtt_escalation_s", recovery.WINDOW_MS // 1000)
 
 # After a move, the supply gets this long to recover before the idle read.
 SERVO_SETTLE_S = 2
@@ -163,35 +163,37 @@ async def service_mqtt(mqtt, blinds, loop_timeout):
         await asyncio.sleep(MQTT_SERVICE_SLEEP_S)
 
 
-async def watch_health(mqtt, blinds, escalation, wifi_up):
+async def escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done):
     """
     Feed the watchdog, and restart once the liveness echo has been missing
-    for the escalation window, as soon as the blind isn't moving.
+    for the escalation window, as soon as the blind isn't in a move.
 
     It starts before the Wi-Fi connect at boot, so there the watchdog only
     resets a frozen loop, and the escalation ends a connect that never
     succeeds. From then on the watchdog is fed on every pass, connected or
     not, so a broker outage ends in the escalation. A Wi-Fi loss while idle
-    ends in a reset, 16 s later: the radio gives up reconnecting by itself,
-    and connect_wifi() only runs at boot.
+    ends in a watchdog reset: the radio gives up reconnecting by itself, and
+    connect_wifi() only runs at boot. Neither restarts the blind in a move,
+    a tilt-only one included, which would leave a servo driving.
     """
     last_echo = mqtt.last_echo
     wifi_lost = False
     while True:
         t_ms = now_ms()
+        in_move = blinds.in_move
         if mqtt.last_echo != last_echo:
             last_echo = mqtt.last_echo
             escalation.echo(t_ms)
-        if escalation.due(t_ms, blinds.in_move):
-            print(f"MQTT escalation: no liveness echo for {ESCALATION_MS // 1000} s, restarting.")
+        if escalation.due(t_ms, in_move):
+            print(f"MQTT escalation: no liveness echo for {ESCALATION_S} s, restarting.")
             reset_cause.restart(reset_cause.MQTT_ESCALATION, RESTART_SLEEP_S)
-        if blinds.is_moving or wifi.radio.connected or not wifi_up.is_set():
+        if in_move or wifi.radio.connected or not boot_connect_done.is_set():
             wifi_lost = False
             microcontroller.watchdog.feed()
         elif not wifi_lost:
             wifi_lost = True
             print("Wi-Fi lost while idle, leaving the watchdog to reset.")
-        await asyncio.sleep(HEALTH_CHECK_S)
+        await asyncio.sleep(WATCHDOG_FEED_S)
 
 
 async def status_blinker(blinds):
@@ -399,12 +401,13 @@ async def run_blind(reader):
 
     # From here on this task feeds the watchdog, through the Wi-Fi connect's
     # retries too.
-    wifi_up = asyncio.Event()
-    escalation = recovery.Escalation(now_ms(), ESCALATION_MS)
-    tasks = [asyncio.create_task(watch_health(mqtt, blinds, escalation, wifi_up))]
+    boot_connect_done = asyncio.Event()
+    escalation = recovery.Escalation(now_ms(), ESCALATION_S * 1000)
+    tasks = [asyncio.create_task(
+        escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done))]
     await blink(Color.BLUE, 3)
     await connect_wifi()
-    wifi_up.set()
+    boot_connect_done.set()
 
     # The supervisor owns connecting, and rebuilds the client when it drops.
     mqtt.start_supervisor()
@@ -417,11 +420,11 @@ async def run_blind(reader):
     await asyncio.gather(*tasks)
 
 
-# main() only ends by failing. It runs again RETRY_S later, until it fails
+# main() only ends by failing. The restart loop runs it again, until it fails
 # restart_loop_max times in a row, each run shorter than the escalation
 # window; then the blind restarts.
 restart_loop = recovery.RestartLoop(os.getenv("restart_loop_max", recovery.MAX_FAILURES),
-                                    ESCALATION_MS)
+                                    ESCALATION_S * 1000)
 while True:
     started_ms = now_ms()
     try:
@@ -435,7 +438,7 @@ while True:
     # next run doesn't run them too.
     asyncio.new_event_loop()
     gc.collect()
-    print(f"Running main() again in {RETRY_S} s...")
+    print(f"Running main() again in {RESTART_LOOP_DELAY_S} s...")
     # main() armed the watchdog first thing, and arms it again.
     microcontroller.watchdog.feed()
-    sleep(RETRY_S)
+    sleep(RESTART_LOOP_DELAY_S)
