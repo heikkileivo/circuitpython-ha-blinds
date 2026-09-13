@@ -102,8 +102,9 @@ def _health_read(reader, scs_id, stop_confirmed):
         return ServoRead(stop_confirmed, uart_errors=reader.uart_errors(scs_id))
     error, data = block
     voltage, temperature, _, status, moving = data
+    # CircuitPython rejects two adjacent f-strings, so + joins them.
     print(f"Servo {scs_id}: stop_confirmed {stop_confirmed}, ERROR {ping_error | error:#04x}, "
-          f"status {status:#04x}, moving {moving}, {voltage / 10} V, {temperature} C")
+          + f"status {status:#04x}, moving {moving}, {voltage / 10} V, {temperature} C")
     return ServoRead(stop_confirmed, error=ping_error | error, voltage=voltage,
                      temperature=temperature, status=status,
                      uart_errors=reader.uart_errors(scs_id))
