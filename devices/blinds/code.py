@@ -15,6 +15,7 @@ from packet import Reader
 from components import blinds_discovery
 import servo_health
 import reset_cause
+import recovery
 from blink import blink, Color, pixel
 from mqtt import Mqtt
 import storage
@@ -35,6 +36,22 @@ except Exception as e:
 # idle a call starts about every 0.5 s.
 MQTT_SERVICE_SLEEP_S = 0.25
 
+# The watchdog's timeout. Every blocking step must fit inside it, the Wi-Fi
+# scan and connect at boot, which block back to back, included.
+WATCHDOG_TIMEOUT_S = 16
+# One Wi-Fi connect attempt gives up after this long.
+WIFI_CONNECT_TIMEOUT_S = 8
+# The watchdog is fed, and the escalation checked, this often.
+WATCHDOG_FEED_S = 1
+# A restart the firmware triggers deep-sleeps this long.
+RESTART_SLEEP_S = 1
+# The restart loop runs main() again this long after it fails.
+RESTART_LOOP_DELAY_S = 10
+# The escalation window, in seconds: the blind restarts once its liveness
+# echo has been missing this long. A run of main() that lasts longer resets
+# the restart loop's count.
+ESCALATION_S = os.getenv("mqtt_escalation_s", recovery.WINDOW_MS // 1000)
+
 # After a move, the supply gets this long to recover before the idle read.
 SERVO_SETTLE_S = 2
 # While the blind is idle, the servos' health is read and published this
@@ -48,6 +65,34 @@ COVER_STATES = {Blinds.POSITION_UNKNOWN: "unknown",
                 Blinds.POSITION_DOWN: "closed",
                 Blinds.POSITION_UP: "open",
                 Blinds.POSITION_STOPPED: "stopped"}
+
+
+def now_ms():
+    """The time in ms for the recovery decisions. monotonic() loses precision
+    within hours of uptime; monotonic_ns() doesn't."""
+    return time.monotonic_ns() // 1_000_000
+
+
+def arm_watchdog():
+    # On a later run of main() the mode is RESET already, which setting it
+    # again leaves as it is, so it's fed here too.
+    microcontroller.watchdog.timeout = WATCHDOG_TIMEOUT_S
+    microcontroller.watchdog.mode = WatchDogMode.RESET
+    microcontroller.watchdog.feed()
+    print(f"Watchdog enabled with {WATCHDOG_TIMEOUT_S}s timeout.")
+
+
+def unknown_failure_code(e):
+    """The code in a Wi-Fi connect's "Unknown failure 205" error, or None.
+    Not every error's errno is a string: an OSError's is an int, and most
+    exceptions have none."""
+    errno = getattr(e, "errno", None)
+    if not isinstance(errno, str) or "Unknown failure" not in errno:
+        return None
+    try:
+        return int(errno[errno.rfind(" "):])
+    except ValueError:
+        return None
 
 
 async def connect_wifi():
@@ -64,15 +109,15 @@ async def connect_wifi():
                 print(f"\t{network.ssid}\t\tRSSI: {network.rssi:d}\tChannel: {network.channel:d}")
 
             wifi.radio.stop_scanning_networks()
-            wifi.radio.connect(ssid, pwd)
+            wifi.radio.connect(ssid, pwd, timeout=WIFI_CONNECT_TIMEOUT_S)
             print("Connected to wifi.")
             pixel[0] = Color.BLACK
             await blink(Color.GREEN, 3)
             return
         except Exception as e:
-            print(f"Connecting to wifi {ssid} failed: {e}")
-            if "Unknown failure" in e.errno:
-                code = int(e.errno[e.errno.rfind(" "):])
+            print(f"Connecting to wifi {ssid} failed: {e!r}")
+            code = unknown_failure_code(e)
+            if code is not None:
                 await blink(Color.ORANGE, code)
             else:
                 await blink(Color.RED, 3)
@@ -109,25 +154,46 @@ async def publish_uptime(mqtt, disc):
 
 async def service_mqtt(mqtt, blinds, loop_timeout):
     """
-    Handle incoming MQTT messages while the blind is idle, and feed the
-    watchdog.
-
-    loop() blocks the asyncio loop, so it isn't called while the blind moves.
-    The watchdog is fed on every pass, connected or not, so a broker outage
-    doesn't end in a reset. A Wi-Fi loss while idle does, 16 s later: the
-    radio gives up reconnecting by itself, and connect_wifi() at boot doesn't.
+    Handle incoming MQTT messages while the blind is idle. loop() blocks the
+    asyncio loop, so it isn't called while the blind moves.
     """
-    wifi_lost = False
     while True:
         if not blinds.is_moving:
             await mqtt.loop(loop_timeout)
-        if blinds.is_moving or wifi.radio.connected:
+        await asyncio.sleep(MQTT_SERVICE_SLEEP_S)
+
+
+async def escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done):
+    """
+    Feed the watchdog, and restart once the liveness echo has been missing
+    for the escalation window, as soon as the blind isn't in a move.
+
+    It starts before the Wi-Fi connect at boot, so there the watchdog only
+    resets a frozen loop, and the escalation ends a connect that never
+    succeeds. From then on the watchdog is fed on every pass, connected or
+    not, so a broker outage ends in the escalation. A Wi-Fi loss while idle
+    ends in a watchdog reset: the radio gives up reconnecting by itself, and
+    connect_wifi() only runs at boot. Neither restarts the blind in a move,
+    a tilt-only one included, which would leave a servo driving.
+    """
+    last_echo = mqtt.last_echo
+    wifi_lost = False
+    while True:
+        t_ms = now_ms()
+        in_move = blinds.in_move
+        if mqtt.last_echo != last_echo:
+            last_echo = mqtt.last_echo
+            escalation.echo(t_ms)
+        if escalation.due(t_ms, in_move):
+            print(f"MQTT escalation: no liveness echo for {ESCALATION_S} s, restarting.")
+            reset_cause.restart(reset_cause.MQTT_ESCALATION, RESTART_SLEEP_S)
+        if in_move or wifi.radio.connected or not boot_connect_done.is_set():
             wifi_lost = False
             microcontroller.watchdog.feed()
         elif not wifi_lost:
             wifi_lost = True
             print("Wi-Fi lost while idle, leaving the watchdog to reset.")
-        await asyncio.sleep(MQTT_SERVICE_SLEEP_S)
+        await asyncio.sleep(WATCHDOG_FEED_S)
 
 
 async def status_blinker(blinds):
@@ -171,16 +237,29 @@ def output_mem():
 
 
 async def main():
-    # A controller reset leaves the servos doing whatever they were doing.
-    # On a hard reset boot.py has stopped them already. Stop them again,
-    # which also covers a soft reload, and read their health, which is
-    # published once connected.
+    arm_watchdog()
     uart = busio.UART(board.TX,
                             board.RX,
                             baudrate=250000,
                             receiver_buffer_size=32)
-
     reader = Reader(uart)
+    try:
+        await run_blind(reader)
+    finally:
+        # Only a failure ends a run, and its move no longer runs: stop the
+        # servos, then free the UART for the next run.
+        try:
+            servo_health.stop_servos(reader)
+        except Exception as e:
+            print(f"Failed to stop the servos: {e!r}")
+        uart.deinit()
+
+
+async def run_blind(reader):
+    # A controller reset leaves the servos doing whatever they were doing.
+    # On a hard reset boot.py has stopped them already. Stop them again,
+    # which also covers a soft reload, and read their health, which is
+    # published once connected.
     reader.flush_buffer()
 
     def health_json(*figures):
@@ -319,17 +398,20 @@ async def main():
         board.D2,
         tilt_scale)
     blinds.find_out_current_state()
+
+    # From here on this task feeds the watchdog, through the Wi-Fi connect's
+    # retries too.
+    boot_connect_done = asyncio.Event()
+    escalation = recovery.Escalation(now_ms(), ESCALATION_S * 1000)
+    tasks = [asyncio.create_task(
+        escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done))]
     await blink(Color.BLUE, 3)
     await connect_wifi()
-
-    microcontroller.watchdog.timeout = 16
-    microcontroller.watchdog.mode = WatchDogMode.RESET
-    print("Watchdog enabled with 16s timeout.")
+    boot_connect_done.set()
 
     # The supervisor owns connecting, and rebuilds the client when it drops.
     mqtt.start_supervisor()
 
-    tasks = []
     tasks.append(asyncio.create_task(service_mqtt(mqtt, blinds, socket_timeout)))
     tasks.append(asyncio.create_task(status_blinker(blinds)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
@@ -337,4 +419,26 @@ async def main():
 
     await asyncio.gather(*tasks)
 
-asyncio.run(main())
+
+# main() only ends by failing. The restart loop runs it again, until it fails
+# restart_loop_max times in a row, each run shorter than the escalation
+# window; then the blind restarts.
+restart_loop = recovery.RestartLoop(os.getenv("restart_loop_max", recovery.MAX_FAILURES),
+                                    ESCALATION_S * 1000)
+while True:
+    started_ms = now_ms()
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"main() failed: {e!r}")
+    if restart_loop.failed(started_ms, now_ms()):
+        print("main() keeps failing, restarting.")
+        reset_cause.restart(reset_cause.RESTART_LOOP, RESTART_SLEEP_S)
+    # asyncio.run() leaves the failed run's tasks queued: drop them, so the
+    # next run doesn't run them too.
+    asyncio.new_event_loop()
+    gc.collect()
+    print(f"Running main() again in {RESTART_LOOP_DELAY_S} s...")
+    # main() armed the watchdog first thing, and arms it again.
+    microcontroller.watchdog.feed()
+    sleep(RESTART_LOOP_DELAY_S)
