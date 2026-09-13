@@ -1,6 +1,6 @@
 from packet import Address
 from revolutions import RevolutionCounter
-from stall import StallDetector
+import stall
 from time import monotonic_ns, sleep
 import microcontroller
 import asyncio, digitalio
@@ -207,10 +207,11 @@ async def count_revolutions(servo, finish_event, counting_up, callback):
     its revolutions, and stop the lift at once if it stalls."""
     sample_s = os.getenv("lift_sample_ms", 50) / 1000
     counter = RevolutionCounter(counting_up)
-    stall = StallDetector(window_ms=os.getenv("stall_window_ms", 150),
-                          max_speed=os.getenv("stall_max_speed", 20),
-                          max_angle_change=os.getenv("stall_max_angle_change", 5),
-                          grace_ms=os.getenv("stall_grace_ms", 300))
+    detector = stall.StallDetector(
+        window_ms=os.getenv("stall_window_ms", stall.WINDOW_MS),
+        max_speed=os.getenv("stall_max_speed", stall.MAX_SPEED),
+        max_angle_change=os.getenv("stall_max_angle_change", stall.MAX_ANGLE_CHANGE),
+        grace_ms=os.getenv("stall_grace_ms", stall.GRACE_MS))
     print(f"Counting revolutions for servo {servo.id}...")
     while True:
         # monotonic() loses precision within hours of uptime; monotonic_ns() doesn't.
@@ -218,14 +219,14 @@ async def count_revolutions(servo, finish_event, counting_up, callback):
         sample = servo.angle_and_speed
         if sample:
             angle, speed = sample
-            if stall.feed(started // 1000000, angle, speed, servo.commanded_duty):
+            if detector.feed(started // 1000000, angle, speed, servo.commanded_duty):
                 # Stop the lift before anything else. operate()'s stop path
                 # then ends the move.
                 try:
                     servo.speed = 0
                 except ServoCommFailure as e:
                     print(f"Failed to stop the stalled lift: {e}")
-                print(f"STALL: the lift's servo angle was frozen for {stall.frozen_ms} ms.")
+                print(f"STALL: the lift's servo angle was frozen for {detector.frozen_ms} ms.")
                 finish_event.set()
                 break
             if counter.feed(angle):

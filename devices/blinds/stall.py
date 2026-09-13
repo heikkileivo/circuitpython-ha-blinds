@@ -1,13 +1,21 @@
 """Deciding that the lift servo has stalled, from its samples during a move.
 Pure, so the host tests run it."""
 
+# Starting values, which the stall_* settings override. The bench saw the
+# speed read 0 and the servo angle freeze within about 100 ms at the head rail.
+WINDOW_MS = 150
+MAX_SPEED = 20          # counts/s
+MAX_ANGLE_CHANGE = 5    # counts
+GRACE_MS = 300
+
 
 class StallDetector:
     """Decides "stalled" once the servo angle has stayed frozen, with the
     speed about 0, for the stall window. After a duty command the servo gets
     a start-up grace, so one that never starts is stalled once it's over."""
 
-    def __init__(self, window_ms=150, max_speed=20, max_angle_change=5, grace_ms=300):
+    def __init__(self, window_ms=WINDOW_MS, max_speed=MAX_SPEED,
+                 max_angle_change=MAX_ANGLE_CHANGE, grace_ms=GRACE_MS):
         self._window_ms = window_ms
         self._max_speed = max_speed
         self._max_angle_change = max_angle_change
@@ -16,7 +24,7 @@ class StallDetector:
         self._commanded_at = None
         self._frozen_since = None
         self._frozen_angle = None
-        self._outlier = False
+        self._skipped_outlier = False
         self.frozen_ms = 0
 
     def feed(self, t_ms, angle, speed, duty):
@@ -30,16 +38,16 @@ class StallDetector:
             return False
         still = abs(speed) <= self._max_speed
         if self._frozen_since is not None and still and self._near_frozen_angle(angle):
-            self._outlier = False
-        elif self._frozen_since is not None and not self._outlier:
+            self._skipped_outlier = False
+        elif self._frozen_since is not None and not self._skipped_outlier:
             # Near the wrap a single sample reads a stray angle or an absurd
             # speed. It's skipped; a second one in a row ends the frozen run.
-            self._outlier = True
+            self._skipped_outlier = True
             return False
         elif still:
             self._frozen_since = t_ms
             self._frozen_angle = angle
-            self._outlier = False
+            self._skipped_outlier = False
         else:
             self._frozen_since = None
             return False

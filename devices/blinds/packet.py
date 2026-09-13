@@ -168,7 +168,7 @@ class Reader:
         data = reply[1]
         angle = (data[0] << 8) | data[1]
         speed = ((data[2] & 0x7F) << 8) | data[3]
-        return angle, -speed if data[2] & 0x80 else speed
+        return angle, (-speed if data[2] & 0x80 else speed)
 
     def set_position(self, scs_id, position):
         return self.write_word(scs_id, Address.GOAL_POSITION_L, position)
