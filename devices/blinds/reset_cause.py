@@ -1,22 +1,29 @@
 """The reset cause: why the blind last restarted, as published to Home
 Assistant.
 
-A restart the firmware triggers itself stores its cause in sleep memory,
-which a deep sleep keeps and every real reset wipes: offset 0 holds the
-magic, and offset 1 the cause. It restarts through a short deep sleep,
-never microcontroller.reset(), which would hide the cause behind a software
-reset.
+A restart the firmware triggers itself stores its cause in NVM, then resets
+through microcontroller.reset(): the magic, then the cause, in the two bytes
+at NVM_AT. NVM survives every reset, so the boot takes a stored cause only
+after a software reset, and clears it.
+
+Not sleep memory and a deep sleep: CircuitPython 9.1.1 fakes every deep
+sleep on the blinds, because it reads BLE serial as always connected, and
+ESP-IDF's bootloader wipes sleep memory on a software reset (#82).
 
 The boot decision is pure, so the host tests run it. The functions that
-touch the chip import alarm, microcontroller and time themselves, so this
-module imports on CPython too.
+touch the chip import microcontroller themselves, so this module imports on
+CPython too.
 """
 
 MAGIC = 0xB1
 
-# The firmware-triggered causes, by the code stored at offset 1. A watchdog
-# reset has no restart of its own, but it keeps "watchdog" through the one
-# restart that brings the web workflow up.
+# Where the stored cause's two bytes sit in microcontroller.nvm: right after
+# the 12-byte travel record at offset 0 (#13).
+NVM_AT = 12
+
+# The firmware-triggered causes, by the code in the record's second byte. A
+# watchdog reset has no restart of its own, but it keeps "watchdog" through
+# the one restart that brings the web workflow up.
 BROWNOUT = 1
 OTHER_SAFE_MODE = 2
 MQTT_ESCALATION = 3
@@ -42,68 +49,59 @@ OTHER = "other"
 # Every member of microcontroller.ResetReason in CircuitPython 9.1.
 _CHIP_REASONS = tuple(_CHIP_CAUSES) + ("UNKNOWN", "RESCUE_DEBUG")
 
-# How long the one restart after a watchdog reset sleeps.
-WATCHDOG_RESTART_S = 1
-
 # The reset_cause entity's options: every cause the boot can publish.
 OPTIONS = tuple(sorted(set(_STORED_CAUSES.values()) | set(_CHIP_CAUSES.values()) | {OTHER}))
 
 
 def record(cause):
-    """The two sleep-memory bytes that store a firmware-triggered cause."""
+    """The two bytes that store a firmware-triggered cause."""
     return bytes((MAGIC, cause))
 
 
 def boot_decision(stored, chip_reason):
-    """What to do at boot, given sleep memory's first two bytes and the name
-    of the chip's reset reason. Returns the cause to publish, whether to
-    restart first, and the two bytes to write to sleep memory, or None.
+    """What to do at boot, given the stored cause's two bytes and the name of
+    the chip's reset reason. Returns the cause to publish, whether to
+    restart first, and the two bytes to write back, or None.
 
-    Only the magic is checked, not the chip's reason as well: with USB
-    connected the deep sleep is faked without a reset, and the chip keeps
-    its earlier reason. Every real reset wipes sleep memory, so the magic
-    alone is enough.
+    Every firmware-triggered restart is a software reset, and the bytes
+    survive every reset, so a stored cause counts only when the chip says
+    SOFTWARE. One found after any other reset is stale, for example from
+    power lost between storing it and the reset, and is cleared.
     """
-    if stored[0] == MAGIC:
+    if stored[0] == MAGIC and chip_reason == "SOFTWARE":
         # Zeroed, so a soft reload doesn't publish it again.
         return _STORED_CAUSES.get(stored[1], OTHER), False, bytes(2)
     if chip_reason == "WATCHDOG":
         # The web workflow doesn't start after a watchdog reset, but it does
-        # after a deep-sleep alarm. The follow-up boot finds the magic, so
+        # after a software reset. The follow-up boot finds the cause, so
         # this restarts only once.
         return None, True, record(WATCHDOG)
-    return _CHIP_CAUSES.get(chip_reason, OTHER), False, None
+    return _CHIP_CAUSES.get(chip_reason, OTHER), False, bytes(2) if stored[0] == MAGIC else None
 
 
 def at_boot():
     """This boot's reset cause, for publishing once connected. Clears the
     stored cause. After a watchdog reset with none stored, it restarts once
     instead, keeping "watchdog", and doesn't return."""
-    import alarm
+    import microcontroller
     chip_reason = _chip_reason()
-    cause, restart_first, to_write = boot_decision(bytes(alarm.sleep_memory[0:2]), chip_reason)
+    cause, restart_first, to_write = boot_decision(
+        bytes(microcontroller.nvm[NVM_AT:NVM_AT + 2]), chip_reason)
     if to_write is not None:
-        alarm.sleep_memory[0:2] = to_write
+        microcontroller.nvm[NVM_AT:NVM_AT + 2] = to_write
     if restart_first:
         print("Watchdog reset: restarting once, so the web workflow starts.")
-        _deep_sleep(WATCHDOG_RESTART_S)
+        microcontroller.reset()
     print(f"Reset cause: {cause} (chip: {chip_reason})")
     return cause
 
 
-def restart(cause, seconds):
+def restart(cause):
     """Restart with a firmware-triggered cause, BROWNOUT to WATCHDOG: store
-    it, then deep-sleep for the given seconds. Doesn't return."""
-    import alarm
-    alarm.sleep_memory[0:2] = record(cause)
-    _deep_sleep(seconds)
-
-
-def _deep_sleep(seconds):
-    import alarm
-    import time
-    alarm.exit_and_deep_sleep_until_alarms(
-        alarm.time.TimeAlarm(monotonic_time=time.monotonic() + seconds))
+    it, then reset. Doesn't return."""
+    import microcontroller
+    microcontroller.nvm[NVM_AT:NVM_AT + 2] = record(cause)
+    microcontroller.reset()
 
 
 def _chip_reason():
