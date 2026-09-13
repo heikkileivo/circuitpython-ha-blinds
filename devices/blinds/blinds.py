@@ -308,7 +308,8 @@ class Blinds:
 
         async def _as_move(self, drive):
             """Await a coroutine that drives the servos, as one move. When
-            it ends, on_moved gets the move's figures."""
+            the last move under way ends, on_moved gets the blind, whose
+            move_figures are then the moves' figures."""
             self._begin_move()
             try:
                 await drive
@@ -350,22 +351,28 @@ class Blinds:
 
         @property
         def move_figures(self):
-            """The lift and tilt servos' figures from the move under way, or
-            else the last one."""
+            """The lift and tilt servos' figures from the move under way.
+            on_moved gets the blind while they're the finished move's."""
             return self._lift_servo.move, self._tilt_servo.move
 
         def _begin_move(self):
             # Moves can overlap, as each tilt command starts its own. The
             # first starts fresh figures, and the last to end reports them.
             if not self._moves:
-                self._lift_servo.move = MoveFigures()
-                self._tilt_servo.move = MoveFigures()
+                self._fresh_figures()
             self._moves += 1
 
         def _end_move(self):
             self._moves -= 1
             if not self._moves:
                 self._on_moved(self)
+                # Reads between moves, such as a stop while idle, then feed
+                # figures nobody reports.
+                self._fresh_figures()
+
+        def _fresh_figures(self):
+            self._lift_servo.move = MoveFigures()
+            self._tilt_servo.move = MoveFigures()
 
         @property
         def position(self):

@@ -31,6 +31,15 @@ def answered(**changes):
     return ServoRead(**fields)
 
 
+def moved(*samples):
+    """One servo's figures from a move, fed its samples as (supply voltage
+    in 0.1 V, load)."""
+    move = MoveFigures()
+    for voltage, load in samples:
+        move.feed(voltage, load)
+    return move
+
+
 class ClassifyTest(unittest.TestCase):
     def test_a_servo_that_answers_without_an_error_is_ok(self):
         self.assertEqual(classify(answered()), "ok")
@@ -104,15 +113,6 @@ class HealthMessageTest(unittest.TestCase):
         self.assertEqual(set(message) & BLOCKED_ATTRIBUTES, set())
 
 
-def moved(*samples):
-    """One servo's figures from a move, fed its samples as (supply voltage
-    in 0.1 V, load)."""
-    move = MoveFigures()
-    for voltage, load in samples:
-        move.feed(voltage, load)
-    return move
-
-
 class ServoMinVoltageTest(unittest.TestCase):
     def test_it_is_the_lowest_supply_either_servo_reported_during_the_move(self):
         # The bench's head-rail stall pulled the supply from 8.5 V to 5.8 V.
@@ -138,7 +138,7 @@ class FakeServo:
     """
 
     def __init__(self, scs_id, duty=0, torque=0, voltage=85, temperature=21,
-                 status=0, moving=0, error=0, ignored_writes=0, missed_pings=0,
+                 status=0, error=0, ignored_writes=0, missed_pings=0,
                  answers=True):
         self.id = scs_id
         self.memory = bytearray(Address.PRESENT_CURRENT_H + 1)
@@ -149,7 +149,6 @@ class FakeServo:
         self.memory[Address.PRESENT_VOLTAGE] = voltage
         self.memory[Address.PRESENT_TEMPERATURE] = temperature
         self.memory[Address.STATUS] = status
-        self.memory[Address.MOVING] = moving
         self.error = error
         self.ignored_writes = ignored_writes
         self.missed_pings = missed_pings
@@ -299,13 +298,6 @@ class IdleReadTest(unittest.TestCase):
         self.assertEqual(message["lift"], {"health": "ok", "temperature": 27,
                                            "idle_voltage": 8.4, "min_voltage": 5.8,
                                            "peak_load": 800, "uart_errors": 0})
-
-    def test_a_servo_still_moving_at_the_idle_read_is_error(self):
-        # The idle read runs with neither servo driving, so a servo that
-        # still moves wasn't stopped.
-        lift_read, tilt_read = idle_reads(Reader(FakeBus(FakeServo(1, moving=1), FakeServo(2))))
-
-        self.assertEqual((classify(lift_read), classify(tilt_read)), ("error", "ok"))
 
     def test_a_servo_that_doesnt_answer_the_idle_read_is_no_reply(self):
         _, tilt_read = idle_reads(Reader(FakeBus(FakeServo(1), FakeServo(2, answers=False))))

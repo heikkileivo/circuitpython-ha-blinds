@@ -1,7 +1,10 @@
 """Servo health: whether the blind's servos answer and report no error, as
-published to Home Assistant, and the boot re-init that stops the servos and
-reads it. The classification is pure, and the re-init only needs a Reader,
-so the host tests run both, the re-init on a fake servo bus."""
+published to Home Assistant, with the servo diagnostics behind it: each
+servo's lowest supply voltage and peak load during a move, and its idle
+voltage and temperature. Also the boot re-init that stops the servos, and
+the health reads at boot and while idle. The classification and the move
+figures are pure, and the reads only need a Reader, so the host tests run
+them all, the reads on a fake servo bus."""
 
 from packet import Address
 
@@ -20,8 +23,8 @@ HEALTHS = (OK, ERROR, NO_REPLY)
 
 
 class ServoRead:
-    """One servo's health read at boot. error is None when the servo gave no
-    good reply."""
+    """One servo's health read, at boot or while idle. error is None when
+    the servo gave no good reply."""
 
     def __init__(self, stop_confirmed, error=None, voltage=None, temperature=None,
                  status=None, uart_errors=0):
@@ -83,24 +86,22 @@ def boot_reinit(reader):
 def idle_reads(reader):
     """Read both servos' health while neither is driving: after a move has
     settled, and now and then while the blind is idle. Returns the lift and
-    tilt servos' health reads. A servo that still moves wasn't stopped."""
-    return _health_read(reader, LIFT_ID), _health_read(reader, TILT_ID)
+    tilt servos' health reads. There's no stop of their own to confirm, and
+    the moving flag is only logged, as at boot."""
+    return _health_read(reader, LIFT_ID, True), _health_read(reader, TILT_ID, True)
 
 
-def _health_read(reader, scs_id, stop_confirmed=None):
+def _health_read(reader, scs_id, stop_confirmed):
     """Ping the servo, and read 62-66 (voltage, temperature, async write
-    flag, status, moving) in one transaction. Without a stop_confirmed from
-    a stop just written, the stop is confirmed if the servo isn't moving."""
+    flag, status, moving) in one transaction."""
     ping_error = _first_reply(lambda: reader.ping(scs_id))
     block = None if ping_error is None else _first_reply(
         lambda: reader.read(scs_id, Address.PRESENT_VOLTAGE, 5))
     if block is None:
         print(f"Servo {scs_id}: no reply to the health read.")
-        return ServoRead(bool(stop_confirmed), uart_errors=reader.uart_errors(scs_id))
+        return ServoRead(stop_confirmed, uart_errors=reader.uart_errors(scs_id))
     error, data = block
     voltage, temperature, _, status, moving = data
-    if stop_confirmed is None:
-        stop_confirmed = not moving
     print(f"Servo {scs_id}: stop_confirmed {stop_confirmed}, ERROR {ping_error | error:#04x}, "
           f"status {status:#04x}, moving {moving}, {voltage / 10} V, {temperature} C")
     return ServoRead(stop_confirmed, error=ping_error | error, voltage=voltage,

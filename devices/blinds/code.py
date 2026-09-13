@@ -283,8 +283,11 @@ async def main():
                              servo_states["servo_health"], retain=True)
 
     async def publish_servo_health_settled():
+        # The idle read, once the supply has settled, gives the idle voltage
+        # and the temperature at the move's end.
         await asyncio.sleep(SERVO_SETTLE_S)
-        # A move that started meanwhile has its own idle read to come.
+        # A move that started meanwhile has its own idle read to come, with
+        # its own figures.
         if not blinds.in_move:
             publish_servo_health()
 
