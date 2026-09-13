@@ -14,9 +14,16 @@ from blinds import Blinds
 from packet import Reader
 from components import blinds_discovery
 import servo_health
+import reset_cause
 from blink import blink, Color, pixel
 from mqtt import Mqtt
 import storage
+
+# Right after the imports, so the one restart after a watchdog reset comes
+# early. After a real watchdog reset, boot.py has stopped the servos. The
+# cause stays pending until a connect publishes it, once per boot however
+# often main() runs.
+pending_reset_cause = reset_cause.at_boot()
 
 try:
     storage.disable_usb_drive()
@@ -209,7 +216,8 @@ async def main():
         # returns and after Mqtt publishes "online": discovery first, then
         # every command topic in one SUBSCRIBE, then the state. Republishing
         # the state on every connect also gets the state worked out at boot
-        # to HA.
+        # to HA. The reset cause goes once per boot.
+        global pending_reset_cause
         print("Publishing discovery payload...")
         client.publish(disc.discovery_topic, disc.discovery_payload_json(), retain=True)
         topics = disc.command_topics()
@@ -220,6 +228,9 @@ async def main():
         for entity, value in servo_states.items():
             if value is not None:
                 client.publish(disc.topic(entity, "state"), str(value), retain=True)
+        if pending_reset_cause is not None:
+            client.publish(disc.topic("reset_cause", "state"), pending_reset_cause, retain=True)
+            pending_reset_cause = None
 
     def on_message(client, topic, message):
         if topic == disc.topic("cover", "set"):

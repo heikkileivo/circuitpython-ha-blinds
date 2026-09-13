@@ -82,6 +82,19 @@ class BlindsDiscoveryTest(unittest.TestCase):
         self.assertEqual(health["value_template"], "{{ value_json.health }}")
         self.assertEqual(health["json_attributes_topic"], health["state_topic"])
 
+    def test_reset_cause_is_a_diagnostic_enum_of_the_chip_reasons_and_firmware_causes(self):
+        cause = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_reset_cause"]
+
+        self.assertEqual(cause["p"], "sensor")
+        self.assertEqual(cause["name"], "Reset cause")
+        self.assertEqual(cause["entity_category"], "diagnostic")
+        self.assertEqual(cause["device_class"], "enum")
+        # As allocated in #14; "unknown" is left out, as HA takes it as no value.
+        self.assertCountEqual(cause["options"], [
+            "power_on", "reset_pin", "watchdog", "software", "deep_sleep_alarm",
+            "brownout", "other_safe_mode", "mqtt_escalation", "restart_loop", "other"])
+        self.assertEqual(cause["state_topic"], "blinds_f412fa448000/reset_cause/state")
+
     def test_servo_min_voltage_is_a_diagnostic_voltage_measurement(self):
         # A sensor of its own, so HA graphs it and keeps long-term statistics.
         voltage = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_servo_min_voltage"]

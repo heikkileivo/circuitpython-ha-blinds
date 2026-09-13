@@ -1,4 +1,5 @@
 from discovery import HADiscovery
+import reset_cause
 import servo_health
 
 
@@ -47,6 +48,13 @@ def add_components(disc):
         "name": "Reconnects",
         "entity_category": "diagnostic",
         "state_class": "measurement",
+    })
+    # Why the blind last restarted, published once per boot.
+    disc.add_component("reset_cause", "sensor", {
+        "name": "Reset cause",
+        "entity_category": "diagnostic",
+        "device_class": "enum",
+        "options": list(reset_cause.OPTIONS),
     })
     # One retained JSON message: the health for the state, and each servo's
     # figures for the attributes.
