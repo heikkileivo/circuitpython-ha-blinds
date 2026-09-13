@@ -39,3 +39,9 @@ mqtt_pwd = "your_mqtt_password"
 # Optional. Rebuild the MQTT client after this many seconds of listening with
 # no echo of the blind's own uptime; default 45.
 # mqtt_echo_timeout = 45
+# Optional. Restart once the blind has heard no echo of its own uptime for
+# this many seconds, as soon as it isn't moving; default 300.
+# mqtt_escalation_s = 300
+# Optional. Restart after this many failed runs of main() in a row, each
+# shorter than mqtt_escalation_s; default 3.
+# restart_loop_max = 3

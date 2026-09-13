@@ -64,6 +64,18 @@ _Avoid_: Offline, dead, zombie
 Why a device last restarted, as published to Home Assistant. A restart the firmware triggers itself carries its own cause (brownout, other safe mode, MQTT escalation or restart loop). The one restart after a watchdog reset, which brings the web workflow up, keeps watchdog as its cause. Otherwise the cause is the chip's reported reason, such as power-on.
 _Avoid_: Reset reason (the chip's raw report, which shows every firmware-triggered restart as a software reset)
 
+**Liveness echo**:
+A device's own uptime, which it publishes every 10 s and hears back from the broker. It's how a blind tells that its MQTT link is healthy: a successful publish only proves the send buffer took it.
+_Avoid_: Heartbeat, ping (MQTT's own keep-alive probe)
+
+**MQTT escalation**:
+The blind restarting itself because its liveness echo has been missing for 5 minutes. It waits for a move to end first.
+_Avoid_: Health reset, MQTT reset
+
+**Restart loop**:
+code.py running `main()` again after it fails. After 3 quick failed runs in a row the blind restarts instead. A run that lasted longer than the MQTT escalation's 5 minutes resets the count.
+_Avoid_: Retry loop, boot loop
+
 **Unresponsive**:
 A device that still publishes (for example, uptime) but doesn't act on commands.
 _Avoid_: Zombie, hung, stuck
