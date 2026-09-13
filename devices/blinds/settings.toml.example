@@ -18,10 +18,15 @@ close_approach_speed = 300
 # its speed stays at most stall_max_speed counts/s and its servo angle within
 # stall_max_angle_change counts for stall_window_ms. A duty command gets
 # stall_grace_ms to start the servo first. Defaults 150, 20, 5 and 300.
+# In the pot's dead zone at the wrap, where the servo angle holds while the
+# servo turns, the window is stall_dead_zone_window_ms at duty 800 and
+# 800 / |duty| times that at other duties, never less than stall_window_ms;
+# default 200.
 # stall_window_ms = 150
 # stall_max_speed = 20
 # stall_max_angle_change = 5
 # stall_grace_ms = 300
+# stall_dead_zone_window_ms = 200
 
 mqtt_broker = "192.168.1.36"
 mqtt_port = 1883

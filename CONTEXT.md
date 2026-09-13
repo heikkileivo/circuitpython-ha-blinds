@@ -26,6 +26,10 @@ _Avoid_: Unfinished move, crashed move
 The lift or tilt servo's raw rotational reading within a single turn.
 _Avoid_: Position (when meaning the servo reading), servo position
 
+**Dead zone**:
+The part of each turn, at the wrap, where the lift servo's pot gives no reading: the servo angle holds at about 1018–1022, then 0–1, with the speed at 0, while the servo still turns. Crossing it takes about 100 ms at duty 800, and longer in proportion at lower duties.
+_Avoid_: Dead band (the servo's position-mode tolerance, registers 26 and 27)
+
 **End sensor**:
 One of the two reed switches (up and down) that a magnet in the blind closes at the end of its travel. Its active zone is only a few millimetres long.
 _Avoid_: Limit switch, limit sensor, stop pin, reed, up pin, down pin
@@ -43,7 +47,7 @@ The fixed top of the blind assembly. Driving into it stalls the lift servo.
 _Avoid_: Top stop, end stop (when meaning the top)
 
 **Stall**:
-The lift servo driven but not turning: a duty is commanded, yet its speed reads about 0 and its servo angle stays frozen. Its own overload protection never trips in wheel mode, so only the firmware stops a stall.
+The lift servo driven but not turning: a duty is commanded, yet its speed reads about 0 and its servo angle stays frozen. In the dead zone the angle freezes while the servo still turns, so a frozen angle there counts as a stall only after a longer window. Its own overload protection never trips in wheel mode, so only the firmware stops a stall.
 _Avoid_: Jam, stuck, blocked
 
 **Servo health**:
