@@ -45,9 +45,8 @@ _CHIP_REASONS = tuple(_CHIP_CAUSES) + ("UNKNOWN", "RESCUE_DEBUG")
 # How long the one restart after a watchdog reset sleeps.
 WATCHDOG_RESTART_S = 1
 
-# The reset_cause entity's options.
-OPTIONS = ("power_on", "reset_pin", "watchdog", "software", "deep_sleep_alarm",
-           "brownout", "other_safe_mode", "mqtt_escalation", "restart_loop", OTHER)
+# The reset_cause entity's options: every cause the boot can publish.
+OPTIONS = tuple(sorted(set(_STORED_CAUSES.values()) | set(_CHIP_CAUSES.values()) | {OTHER}))
 
 
 def record(cause):
@@ -82,9 +81,9 @@ def at_boot():
     instead, keeping "watchdog", and doesn't return."""
     import alarm
     chip_reason = _chip_reason()
-    cause, restart_first, written = boot_decision(bytes(alarm.sleep_memory[0:2]), chip_reason)
-    if written is not None:
-        alarm.sleep_memory[0:2] = written
+    cause, restart_first, to_write = boot_decision(bytes(alarm.sleep_memory[0:2]), chip_reason)
+    if to_write is not None:
+        alarm.sleep_memory[0:2] = to_write
     if restart_first:
         print("Watchdog reset: restarting once, so the web workflow starts.")
         _deep_sleep(WATCHDOG_RESTART_S)

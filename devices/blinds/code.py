@@ -19,9 +19,11 @@ from blink import blink, Color, pixel
 from mqtt import Mqtt
 import storage
 
-# First, so the one restart after a watchdog reset comes before anything
-# else. boot.py has stopped the servos already.
-boot_reset_cause = reset_cause.at_boot()
+# Right after the imports, so the one restart after a watchdog reset comes
+# early. After a real watchdog reset, boot.py has stopped the servos. The
+# cause stays pending until a connect publishes it, once per boot however
+# often main() runs.
+pending_reset_cause = reset_cause.at_boot()
 
 try:
     storage.disable_usb_drive()
@@ -209,16 +211,13 @@ async def main():
                 (disc.topic("tilt", "state"), blinds.tilt),
                 (disc.topic("speed", "state"), blinds.speed))
 
-    # The reset cause, until the first connect publishes it.
-    pending_reset_cause = boot_reset_cause
-
     def on_connect(client):
         # Deferred on-connect work, which the supervisor runs after connect()
         # returns and after Mqtt publishes "online": discovery first, then
         # every command topic in one SUBSCRIBE, then the state. Republishing
         # the state on every connect also gets the state worked out at boot
         # to HA. The reset cause goes once per boot.
-        nonlocal pending_reset_cause
+        global pending_reset_cause
         print("Publishing discovery payload...")
         client.publish(disc.discovery_topic, disc.discovery_payload_json(), retain=True)
         topics = disc.command_topics()

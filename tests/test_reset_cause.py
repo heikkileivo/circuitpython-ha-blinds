@@ -19,9 +19,9 @@ CHIP_REASONS = ("POWER_ON", "BROWNOUT", "SOFTWARE", "DEEP_SLEEP_ALARM", "RESET_P
 def boot(memory, chip_reason):
     """One boot as code.py runs it: decide, write what the decision says to
     sleep memory, and return the cause to publish and whether to restart."""
-    cause, restart, record = boot_decision(bytes(memory[0:2]), chip_reason)
-    if record is not None:
-        memory[0:2] = record
+    cause, restart, to_write = boot_decision(bytes(memory[0:2]), chip_reason)
+    if to_write is not None:
+        memory[0:2] = to_write
     return cause, restart
 
 
