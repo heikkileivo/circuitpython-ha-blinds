@@ -2,11 +2,13 @@
 turn. Pure, so the host tests run it."""
 
 # The servo angle reads 0-1023 over a turn. A turn ends where it wraps from
-# the last quarter of the turn into the first (opening, when it counts up) or
-# the other way (closing). Samples in the middle half are never part of a wrap,
-# so a stray mid value there (532 or 275 between 1021 and 0) can't add a count.
-LOW_END = 256
-HIGH_START = 768
+# the last third of the turn into the first (opening, when it counts up) or
+# the other way (closing). Samples in the middle third are never part of a
+# wrap, and one stray value between the two sides of it (532 or 275 between
+# 1021 and 0) adds no count wherever it lands. A sample can come up to a third
+# of a turn late, about 235 ms at full speed, and the wrap still counts.
+LOW_END = 341
+HIGH_START = 683
 
 _LOW = 0
 _HIGH = 1
@@ -17,7 +19,7 @@ class RevolutionCounter:
 
     def __init__(self, counting_up):
         # Opening, the angle counts up, so it wraps from high to low.
-        self._before, self._after = (_HIGH, _LOW) if counting_up else (_LOW, _HIGH)
+        self._wrap_from, self._wrap_to = (_HIGH, _LOW) if counting_up else (_LOW, _HIGH)
         self._zone = None
         self.count = 0
 
@@ -29,7 +31,7 @@ class RevolutionCounter:
             zone = _HIGH
         else:
             return False
-        wrapped = self._zone == self._before and zone == self._after
+        wrapped = self._zone == self._wrap_from and zone == self._wrap_to
         self._zone = zone
         if wrapped:
             self.count += 1

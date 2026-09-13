@@ -33,6 +33,11 @@ class RevolutionCounterTest(unittest.TestCase):
         self.assertEqual(count(True, [20, 80]), 0)
         self.assertEqual(count(False, [1000, 940]), 0)
 
+    def test_a_late_sample_past_the_wrap_still_counts(self):
+        # A sample about 220 ms late at full speed lands some 320 counts on.
+        self.assertEqual(count(True, [700, 1000, 300, 600]), 1)
+        self.assertEqual(count(False, [320, 30, 730, 430]), 1)
+
     def test_every_turn_counts_once_despite_strays(self):
         angles = [300, 600, 900, 1021, 532, 20,
                   300, 600, 900, 1010, 30,

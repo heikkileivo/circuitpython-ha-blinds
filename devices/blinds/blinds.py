@@ -1,6 +1,6 @@
 from packet import Address
 from revolutions import RevolutionCounter
-from time import monotonic, sleep
+from time import monotonic_ns, sleep
 import microcontroller
 import asyncio, digitalio
 import math
@@ -201,7 +201,8 @@ async def count_revolutions(servo, finish_event, counting_up, callback):
     is_rotating = False
     stop_counter = STOPPED_SAMPLES
     while True:
-        started = monotonic()
+        # monotonic() loses precision within hours of uptime; monotonic_ns() doesn't.
+        started = monotonic_ns()
         new_position, _ = servo.position
         if new_position:
             if is_rotating:
@@ -225,7 +226,7 @@ async def count_revolutions(servo, finish_event, counting_up, callback):
         if finish_event.is_set():
             break
 
-        await asyncio.sleep(max(0, sample_s - (monotonic() - started)))
+        await asyncio.sleep(max(0, sample_s - (monotonic_ns() - started) / 1e9))
     print(f"Completed counting revolutions for servo {servo.id}.")
 
 async def wait(finish_event, timeout):
