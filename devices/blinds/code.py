@@ -11,7 +11,7 @@ import keypad
 import time
 from adafruit_debouncer import Debouncer
 from blinds import Blinds
-from packet import Packet, Reader
+from packet import Reader
 from components import blinds_discovery
 from blink import blink, Color, pixel
 from mqtt import Mqtt

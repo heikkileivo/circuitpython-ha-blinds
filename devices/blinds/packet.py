@@ -1,6 +1,10 @@
-from time import sleep
-
-DELAY = 0.015
+# How long a transaction waits for the reply (busio.UART's timeout, for the
+# first byte and between bytes). A reply takes about 2 ms.
+READ_TIMEOUT_S = 0.01
+# Addresses below this are EEPROM. The bench's first EEPROM write replied
+# after more than 10 ms, so a write there waits longer.
+EEPROM_END = 40
+EEPROM_TIMEOUT_S = 0.1
 
 class Instruction:
     PING = 1
@@ -43,43 +47,25 @@ class Address:
     PRESENT_CURRENT_H = 70
 
 
-class Packet:
-    @staticmethod
-    def is_valid(packet_data, scs_id, expected_packet_length=None):
-        #print("Validating packet %s" % packet_data)
-        if len(packet_data) < 5:
-            print("Too short packet")
-            return False
-        if packet_data[0] != 255:
-            print("Invalid header")
-            return False
-        if packet_data[1] != 255:
-            print("Invalid header")
-            return False
-        if packet_data[2] != scs_id:
-            print("Invalid id in packet")
-            return False
-        length = packet_data[3]
-        if expected_packet_length:
-            if length != expected_packet_length:
-                print("Packet length not expected.")
-                return False
-        if length != len(packet_data) - 4:
-            print("Invalid packet length")
-            return False
+def checksum(body):
+    return ~sum(body) & 0xFF
 
-        checksum = packet_data[-1]
-        payload = packet_data[2:-1]
-        actual_checksum = (~sum(payload) & 0xFF)
 
-        if checksum != actual_checksum:
-            print("Invalid checksum")
-            return False
-
-        return True
-
-    def payload_of(packet_data):
-        return packet_data[4:-1]
+def reply_problem(reply, scs_id, n):
+    """What's wrong with a reply that should carry n data bytes, or None."""
+    if reply is None:
+        return "no reply"
+    if len(reply) != 6 + n:
+        return "short reply"
+    if reply[0] != 0xFF or reply[1] != 0xFF:
+        return "bad header"
+    if reply[2] != scs_id:
+        return "wrong id"
+    if reply[3] != n + 2:
+        return "wrong length"
+    if reply[-1] != checksum(reply[2:-1]):
+        return "bad checksum"
+    return None
 
 
 class Reader:
@@ -94,8 +80,7 @@ class Reader:
 
     def __init__(self, uart):
         self.uart = uart
-        self.ping_sent = False
-        self.next_header_received = False
+        self._uart_errors = {}
 
     def output_settings(self, id):
         print(f"Id: {self.read_1_byte(id, Address.ID)}")
@@ -139,55 +124,17 @@ class Reader:
         if count:
             self.uart.read(count)
 
-    def raw_ping(self, scs_id):
-        print("Sending raw ping...")
-
-        data = [scs_id, 2, Instruction.PING]
-        checksum = (~sum(data) & 0xFF)
-
-        data = [255, 255] + data + [checksum]
-        print(f"Data: {data}")
-        self.uart.write(bytes(data))
-
-    def read_byte(self, scs_id):
-        sleep(0.018)
-        #print("In waiting: %s" % self.uart.in_waiting)
-        if self.uart.in_waiting:
-            iw = self.uart.in_waiting
-            byte = list(self.uart.read(1))[0]
-            return byte
-        else:
-            if self.ping_sent:
-                self.ping_sent = False
-                return None
-            else:
-                print("Sending ping to pull more data...")
-                self.ping_sent = True
-                self.raw_ping(scs_id)
-                return self.read_byte(scs_id)
+    def read(self, scs_id, address, n):
+        """Read n bytes from address onwards in one transaction. Returns
+        (ERROR byte, data), or None if no good reply came."""
+        return self._transaction(scs_id, Instruction.READ, (address, n), n)
 
     def write_mem(self, scs_id, address, data):
-        count = len(data) + 3
-        data = [scs_id, count, Instruction.WRITE, address] + data
-        checksum = (~sum(data) & 0xFF)
-        data = [255, 255] + data + [checksum]
-        #print("Writing memory, data = %s" % data)
-        #self.flush_buffer()
-        self.uart.reset_input_buffer()
-        self.uart.write(bytes(data))
-        sleep(0.01)
-        return self.read_packet(scs_id)
-
-    def read_mem(self, scs_id, address, length):
-        request_length = 4 # Length of request = 4 bytes
-        data = [scs_id, request_length, Instruction.READ, address, length]
-        checksum = (~sum(data) & 0xFF)
-        data = [255, 255] + data + [checksum]
-        #print("Reading address, request data: %s" % data)
-        #self.flush_buffer()
-        self.uart.reset_input_buffer()
-        self.uart.write(bytes(data))
-        return self.read_packet(scs_id)
+        """Write data from address onwards. Returns the reply's ERROR byte,
+        or None if no good reply came."""
+        timeout = EEPROM_TIMEOUT_S if address < EEPROM_END else READ_TIMEOUT_S
+        reply = self._transaction(scs_id, Instruction.WRITE, [address] + data, 0, timeout)
+        return None if reply is None else reply[0]
 
     def write_byte(self, scs_id, address, value):
         data = [value & 0xFF]
@@ -201,22 +148,15 @@ class Reader:
         return self.write_mem(scs_id, address, data)
 
     def read_1_byte(self, scs_id, address):
-        packet = self.read_mem(scs_id, address, 1)
-        #print("Packet read: %s" % packet)
-        if Packet.is_valid(packet, scs_id):
-            return Packet.payload_of(packet)[-1]
-        return None
+        reply = self.read(scs_id, address, 1)
+        return None if reply is None else reply[1][0]
 
     def read_2_bytes(self, scs_id, address):
-        packet = self.read_mem(scs_id, address, 2)
-        #print("Packet read: %s" % packet)
-        if Packet.is_valid(packet, scs_id, 4):
-            l = Packet.payload_of(packet)[-1]
-            h = Packet.payload_of(packet)[-2]
-
-            return (h << 8) | l
-
-        return None
+        reply = self.read(scs_id, address, 2)
+        if reply is None:
+            return None
+        h, l = reply[1]
+        return (h << 8) | l
 
 
     def set_position(self, scs_id, position):
@@ -231,103 +171,21 @@ class Reader:
     def set_speed(self, scs_id, speed):
         return self.write_word(scs_id, Address.GOAL_SPEED_L, speed)
 
+    def uart_errors(self, scs_id):
+        """How many transactions with this servo got no good reply."""
+        return self._uart_errors.get(scs_id, 0)
 
-    def read_packet(self, scs_id):
-        result = []
-
-        header_found = False
-        id_read = False
-        count_read = False
-        expected_count = 0
-        if self.next_header_received:
-            #print("Header already received on previous read")
-            self.next_header_received = False
-            header_found = True
-            result.extend([255, 255])
-
-        while True:
-
-            byte = self.read_byte(scs_id)
-            #print("Read: %s" % byte)
-            if byte is None:
-                break
-
-            if not header_found:
-                if byte == 255:
-                    #print("Potential 1st header byte")
-                    byte = self.read_byte(scs_id)
-                    if byte is None:
-                        result.append(255)
-                        break
-                    if byte == 255:
-                        header_found = True
-                        result.extend([255, 255])
-                        continue
-
-            else:
-                if id_read == False:
-                    if byte is None:
-                        #print("Invalid data: no id received.")
-                        break
-                    elif byte != scs_id:
-                        #print("Invalid data: wrong id: %s." % byte)
-                        break
-                    else:
-                        #print("Correct id received.")
-                        result.append(byte)
-                        id_read = True
-                        continue
-
-                if count_read == False:
-                    if byte is None:
-                        #print("Invalid data: no cout received.")
-                        break
-                    #print("Expecting %s bytes in payload." % byte)
-                    result.append(byte)
-                    expected_count = byte - 1
-                    count_read = True
-                    continue
-
-                if expected_count == 0:
-                    data = result[2:]
-                    #print("Calculating chceksum for %s" % data)
-                    checksum = (~sum(data)) & 0xFF
-                    #print("Received checksum: %s, calculated: %s..." % (byte, checksum))
-                    result.append(byte)
-                    #if byte == checksum:
-                    #    print("Checksum correct.")
-                    #else:
-                    #    print("Invalid checksum.")
-                    break
-                else:
-                    expected_count -= 1
-                    result.append(byte)
-                    #print("Expecting %s more bytes..." % expected_count)
-                    continue
-
-                if byte == 255:
-                    byte = self.read_byte(scs_id)
-                    if byte is None:
-                        result.append(255)
-                        break
-                    if byte == 255:
-                        self.next_header_received = True
-                        break
-
-        if self.ping_sent:
-            #print("Reading ping data..")
-            while True:
-                 byte = self.read_byte(scs_id)
-                 if byte is None:
-                    break
-                 if byte == 255:
-                    byte = self.read_byte(scs_id)
-                    if byte is None:
-                        break
-                    if byte == 255:
-                        self.next_header_received = True
-                        break
-
-
-
-        return result
+    def _transaction(self, scs_id, instruction, params, n, timeout=READ_TIMEOUT_S):
+        """Send one request and read its reply, 6 + n bytes, in one read.
+        The servos don't echo the request, so nothing needs skipping."""
+        body = bytes((scs_id, len(params) + 2, instruction)) + bytes(params)
+        self.uart.timeout = timeout
+        self.uart.reset_input_buffer()
+        self.uart.write(b"\xff\xff" + body + bytes((checksum(body),)))
+        reply = self.uart.read(6 + n)
+        problem = reply_problem(reply, scs_id, n)
+        if problem:
+            self._uart_errors[scs_id] = self.uart_errors(scs_id) + 1
+            print(f"Servo {scs_id}: {problem}: {reply!r}")
+            return None
+        return reply[4], reply[5:5 + n]

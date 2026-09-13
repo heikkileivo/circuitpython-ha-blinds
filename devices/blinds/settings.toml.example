@@ -11,6 +11,9 @@ close_approach_revs = 5
 open_approach_revs = 5
 open_approach_speed = 500
 close_approach_speed = 300
+# Optional. How often the lift's servo angle is sampled during a move, in
+# milliseconds; default 50.
+# lift_sample_ms = 50
 
 mqtt_broker = "192.168.1.36"
 mqtt_port = 1883
