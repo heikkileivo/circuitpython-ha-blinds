@@ -242,7 +242,7 @@ async def count_revolutions(servo, finish_event, counting_up, callback):
                     servo.speed = 0
                 except ServoCommFailure as e:
                     print(f"Failed to stop the stalled lift: {e}")
-                print(f"STALL: the lift's servo angle was frozen at {angle} for {detector.frozen_ms} ms.")
+                print(f"STALL: the lift's servo angle was frozen at {detector.frozen_angle} for {detector.frozen_ms} ms.")
                 finish_event.set()
                 break
             if counter.feed(angle):

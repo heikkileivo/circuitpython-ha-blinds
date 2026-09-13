@@ -7,9 +7,9 @@ the angle froze at 0 within about 100 ms. Around the wrap the angle reads a
 stray mid value (532, 275) and the speed one absurd value (up to about
 ±30,000). The lift is sampled every 50 ms, lift_sample_ms's default.
 
-The pot's dead zone at the wrap (#78): while the shaft turns through it, the
-angle holds at about 1018-1022, then 0-1, with the speed at 0. Middle's lift,
-measured every 10 ms, is in tests/data.
+The pot's dead zone at the wrap (#78): while the lift servo turns through it,
+the angle holds at about 1018-1022, then 0-1, with the speed at 0. Middle's
+lift, measured every 10 ms, is in tests/data.
 """
 
 import unittest
@@ -19,6 +19,7 @@ from stall import StallDetector
 
 SAMPLE_MS = 50
 MEASURED = Path(__file__).resolve().parent / "data" / "lift_wrap_samples_2026-09-13.txt"
+MEASURED_EVERY_MS = 10
 
 
 def turning(duty, speed, angle, start_ms, end_ms):
@@ -67,9 +68,9 @@ def measured_phases():
     return phases
 
 
-def every_50_ms(duty, samples, offset):
-    """The firmware's view of samples taken every 10 ms: one every SAMPLE_MS,
-    the first at offset."""
+def as_sampled(duty, samples, offset):
+    """The firmware's view of the measured samples: one every SAMPLE_MS, the
+    first at offset."""
     picked, due = [], offset
     for t, angle, speed in samples:
         if t >= due:
@@ -147,24 +148,21 @@ class StallDetectorTest(unittest.TestCase):
 
     def test_the_measured_turns_are_never_stalled_at_any_duty(self):
         # Every phase, sampled every 50 ms from each 10 ms offset, so every
-        # wrap is seen as the firmware might see it.
+        # wrap is seen as the firmware might see it. up300 starts from rest
+        # just below the dead zone and takes 310 ms to cross it.
         for name, (duty, samples) in measured_phases().items():
-            for offset in range(0, SAMPLE_MS, 10):
+            for offset in range(0, SAMPLE_MS, MEASURED_EVERY_MS):
                 with self.subTest(phase=name, offset=offset):
-                    self.assertIsNone(first_stall(every_50_ms(duty, samples, offset)))
+                    self.assertIsNone(first_stall(as_sampled(duty, samples, offset)))
 
     def test_a_start_from_rest_in_the_dead_zone_isnt_stalled(self):
-        # Measured starts from rest: up300 at angle 996, the dead zone's
-        # edge, which it then takes about 300 ms to cross at duty 300, and
-        # down800 at angle 0, inside it.
-        for name in ("up300", "down800"):
-            duty, samples = measured_phases()[name]
-            start = [sample for sample in samples if sample[0] < 1000]
+        # Up at duty 300 from rest at 1022: the servo angle holds, wraps
+        # with one absurd speed, holds at 0, and turns after 400 ms, a
+        # little longer than the measured up300 start.
+        samples = (stalled(-300, 1022, 0, 200) + [(200, 0, -20444, -300)]
+                   + stalled(-300, 0, 250, 400) + turning(-300, 333, 10, 400, 1500))
 
-            self.assertEqual(start[0][2], 0)
-            for offset in range(0, SAMPLE_MS, 10):
-                with self.subTest(phase=name, offset=offset):
-                    self.assertIsNone(first_stall(every_50_ms(duty, start, offset)))
+        self.assertIsNone(first_stall(samples))
 
     def test_a_servo_that_never_starts_is_stalled_after_the_grace(self):
         # Commanded duty 800 up while already against the head rail.
