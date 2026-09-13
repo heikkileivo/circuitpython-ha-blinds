@@ -1,5 +1,6 @@
 """Syntax that CPython accepts but CircuitPython's compiler rejects, checked
-in every file that's deployed to a device.
+in every .py file that's deployed to a device: the code, and the .py sources
+in lib/.
 
 CircuitPython 9.1.1 on the Middle blind (stage 3 gate, #40) failed to import
 servo_health.py with "SyntaxError: invalid syntax" at an f-string continued
@@ -20,62 +21,37 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-DEPLOYED = sorted(list(REPO.glob("shared/*.py")) + list(REPO.glob("devices/*/*.py")))
+DEPLOYED = sorted(list(REPO.glob("shared/*.py")) + list(REPO.glob("devices/*/*.py"))
+                  + list(REPO.glob("lib/**/*.py")))
 
-# Tokens that can sit between two literals that are joined: line breaks
-# inside brackets, and comments.
-_BETWEEN = (tokenize.NL, tokenize.COMMENT)
-# Python 3.12 splits an f-string into FSTRING_START ... FSTRING_END; older
-# versions give one STRING token.
-_FSTRING_START = getattr(tokenize, "FSTRING_START", None)
-_FSTRING_END = getattr(tokenize, "FSTRING_END", None)
+# Tokens that can sit between two literals Python joins: line breaks inside
+# brackets, and comments.
+_GAP_TOKENS = (tokenize.NL, tokenize.COMMENT)
 
 
-def _literals(source):
-    """The source's string literals as (line, text, whether the next token
-    after it is another literal it's joined to)."""
-    lines = source.splitlines(keepends=True)
-
-    def text(start, end):
-        (row, col), (end_row, end_col) = start, end
-        if row == end_row:
-            return lines[row - 1][col:end_col]
-        return lines[row - 1][col:] + "".join(lines[row:end_row - 1]) + lines[end_row - 1][:end_col]
-
-    literals = []
-    depth = 0
-    start = None
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == _FSTRING_START:
-            if depth == 0:
-                start = token.start
-            depth += 1
-            continue
-        if depth:
-            if token.type == _FSTRING_END:
-                depth -= 1
-                if depth == 0:
-                    literals.append((start[0], text(start, token.end), token.end))
-            continue
-        if token.type == tokenize.STRING:
-            literals.append((token.start[0], text(token.start, token.end), token.end))
-        elif token.type not in _BETWEEN and literals and literals[-1] is not None:
-            # Anything else ends a run of joined literals.
-            literals.append(None)
-    return literals
-
-
-def _runs(source):
-    """Each run of adjacent string literals that Python joins, as a list of
-    (line, text), from runs of two or more."""
+def _joined_runs(source):
+    """Each run of two or more adjacent string literals, which Python joins
+    into one, as a list of (line, text). An f-string's text is just its
+    opening, prefix and quotes."""
     runs, run = [], []
-    for literal in _literals(source) + [None]:
-        if literal is None:
+    fstring_depth = 0
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        # An f-string comes as FSTRING_START ... FSTRING_END, with the tokens
+        # of its fields, nested f-strings included, in between.
+        if token.type == tokenize.FSTRING_START:
+            if not fstring_depth:
+                run.append((token.start[0], token.string))
+            fstring_depth += 1
+        elif fstring_depth:
+            if token.type == tokenize.FSTRING_END:
+                fstring_depth -= 1
+        elif token.type == tokenize.STRING:
+            run.append((token.start[0], token.string))
+        elif token.type not in _GAP_TOKENS:
+            # Anything else ends the run.
             if len(run) > 1:
                 runs.append(run)
             run = []
-        else:
-            run.append(literal[:2])
     return runs
 
 
@@ -89,7 +65,7 @@ def rejected_concatenations(source):
     rejects: one with an f-string and another literal that isn't a
     brace-free plain string."""
     rejected = []
-    for run in _runs(source):
+    for run in _joined_runs(source):
         fstrings = [text for _, text in run if _is_fstring(text)]
         braced_plain = [text for _, text in run
                         if not _is_fstring(text) and ("{" in text or "}" in text)]
@@ -123,6 +99,11 @@ class RejectedConcatenationsTest(unittest.TestCase):
         source = 'x = 1\nprint(f"{x}", f"{x:#04x}")\ns = [f"{x}",\n     f"{x}"]\n'
 
         self.assertEqual(rejected_concatenations(source), [])
+
+    def test_a_nested_fstring_is_part_of_the_outer_one(self):
+        source = 'x = 1\ns = (f"a{f\'{x}\'}"\n     "b")\nt = (f"a{f\'{x}\'}"\n     f"b{x}")\n'
+
+        self.assertEqual(rejected_concatenations(source), [4])
 
 
 class DeployedCodeTest(unittest.TestCase):
