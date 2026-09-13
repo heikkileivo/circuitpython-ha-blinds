@@ -16,6 +16,7 @@ from components import blinds_discovery
 import servo_health
 import reset_cause
 import recovery
+import diag
 from blink import blink, Color, pixel
 from mqtt import Mqtt
 import storage
@@ -24,6 +25,23 @@ import storage
 # early. After a real watchdog reset, boot.py has stopped the servos. The
 # cause stays pending until a connect publishes it, once per boot however
 # often main() runs.
+# THROWAWAY (#82): this boot's state, and the state just before the restart
+# that led to it, published once connected. Every deep sleep remembers the
+# state first.
+pending_diag = diag.now("boot") + " | before: " + (diag.take_previous() or "-")
+_real_deep_sleep = reset_cause._deep_sleep
+
+
+def _deep_sleep_remembering(seconds):
+    diag.remember("sleep")
+    _real_deep_sleep(seconds)
+
+
+reset_cause._deep_sleep = _deep_sleep_remembering
+# The diag commands received, and the runs of main() still to fail, which
+# the restart_loop command sets.
+diag_commands = []
+diag_fail_runs = 0
 pending_reset_cause = reset_cause.at_boot()
 
 try:
@@ -221,6 +239,34 @@ async def read_servos_while_idle(blinds, publish_servo_health):
             publish_servo_health()
 
 
+async def run_diag(mqtt, disc, blinds):
+    """THROWAWAY (#82): publish the state every 30 s, and act on a diag
+    command once the blind is idle: restart as the escalation does, fail
+    main() until the restart loop restarts, or starve the watchdog."""
+    global diag_fail_runs
+    passes = 0
+    while True:
+        if passes % 60 == 0:
+            publish_if_connected(mqtt, disc.topic("diag", "live"), diag.now("live"))
+        passes += 1
+        if diag_commands and not blinds.in_move:
+            command = diag_commands.pop(0)
+            print(f"diag command: {command}")
+            if command == "escalate":
+                reset_cause.restart(reset_cause.MQTT_ESCALATION, RESTART_SLEEP_S)
+            elif command == "restart_loop":
+                diag_fail_runs = os.getenv("restart_loop_max", recovery.MAX_FAILURES)
+                raise RuntimeError("diag: failing main() on purpose")
+            elif command == "wdt":
+                try:
+                    microcontroller.watchdog.timeout = 1
+                except Exception as e:
+                    print(f"diag: no 1 s watchdog, the 16 s one resets: {e!r}")
+                while True:
+                    pass
+        await asyncio.sleep(0.5)
+
+
 def output_mem():
     # Show available memory
     print("Memory Info - gc.mem_free()")
@@ -256,6 +302,10 @@ async def main():
 
 
 async def run_blind(reader):
+    global diag_fail_runs
+    if diag_fail_runs > 0:
+        diag_fail_runs -= 1
+        raise RuntimeError("diag: failing main() on purpose")
     # A controller reset leaves the servos doing whatever they were doing.
     # On a hard reset boot.py has stopped them already. Stop them again,
     # which also covers a soft reload, and read their health, which is
@@ -296,12 +346,12 @@ async def run_blind(reader):
         # every command topic in one SUBSCRIBE, then the state. Republishing
         # the state on every connect also gets the state worked out at boot
         # to HA. The reset cause goes once per boot.
-        global pending_reset_cause
+        global pending_reset_cause, pending_diag
         print("Publishing discovery payload...")
         client.publish(disc.discovery_topic, disc.discovery_payload_json(), retain=True)
         topics = disc.command_topics()
         print(f"Subscribing to {topics}...")
-        client.subscribe([(topic, 0) for topic in topics])
+        client.subscribe([(topic, 0) for topic in topics] + [(disc.topic("diag", "cmd"), 0)])
         for topic, value in state_messages(blinds):
             client.publish(topic, str(value), retain=True)
         for entity, value in servo_states.items():
@@ -310,6 +360,10 @@ async def run_blind(reader):
         if pending_reset_cause is not None:
             client.publish(disc.topic("reset_cause", "state"), pending_reset_cause, retain=True)
             pending_reset_cause = None
+        if pending_diag is not None:
+            client.publish(disc.topic("diag", "boot"), pending_diag, retain=True)
+            pending_diag = None
+        client.publish(disc.topic("diag", "connect"), diag.now("connect"))
 
     def on_message(client, topic, message):
         if topic == disc.topic("cover", "set"):
@@ -328,6 +382,8 @@ async def run_blind(reader):
                 blinds.speed = speed
             except Exception as e:
                 print(f"Failed to parse speed: {e!r}")
+        elif topic == disc.topic("diag", "cmd"):
+            diag_commands.append(message)
         elif topic == disc.topic("tilt", "set"):
             try:
                 tilt = int(float(message))
@@ -416,6 +472,7 @@ async def run_blind(reader):
     tasks.append(asyncio.create_task(status_blinker(blinds)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
     tasks.append(asyncio.create_task(read_servos_while_idle(blinds, publish_servo_health)))
+    tasks.append(asyncio.create_task(run_diag(mqtt, disc, blinds)))
 
     await asyncio.gather(*tasks)
 
