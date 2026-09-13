@@ -137,6 +137,21 @@ class ReaderTest(unittest.TestCase):
         self.assertIsNone(reader.read_1_byte(1, Address.PRESENT_TEMPERATURE))
         self.assertIsNone(reader.read_angle_and_speed(1))
 
+    def test_a_ping_returns_the_error_byte(self):
+        uart = FakeUart(reply("ffff010200fc"))
+        reader = Reader(uart)
+
+        error = reader.ping(1)
+
+        self.assertEqual(uart.written, [bytes.fromhex("ffff010201fb")])
+        self.assertEqual(error, 0)
+
+    def test_a_ping_without_a_good_reply_is_none(self):
+        reader = Reader(FakeUart())
+
+        self.assertIsNone(reader.ping(1))
+        self.assertEqual(reader.uart_errors(1), 1)
+
     def test_each_servo_keeps_its_own_uart_error_count(self):
         reader = Reader(FakeUart())
 

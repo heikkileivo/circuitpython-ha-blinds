@@ -1,4 +1,4 @@
-import time, gc, os, sys
+import time, gc, os, sys, json
 from time import sleep
 import microcontroller
 from watchdog import WatchDogMode
@@ -13,6 +13,7 @@ from adafruit_debouncer import Debouncer
 from blinds import Blinds
 from packet import Reader
 from components import blinds_discovery
+import servo_health
 from blink import blink, Color, pixel
 from mqtt import Mqtt
 import storage
@@ -148,10 +149,9 @@ def output_mem():
 
 
 async def main():
-    output_mem()
-
-    # Turn on the power to the NeoPixel
-    tinys3.set_pixel_power(True)
+    # A controller reset leaves the servos doing whatever they were doing, so
+    # stop them before anything else. The health read is published once
+    # connected.
     uart = busio.UART(board.TX,
                             board.RX,
                             baudrate=250000,
@@ -159,6 +159,14 @@ async def main():
 
     reader = Reader(uart)
     reader.flush_buffer()
+    health = servo_health.health_message(*servo_health.boot_reinit(reader))
+    health_json = json.dumps(health, separators=(",", ":"))
+    print(f"Servo health: {health_json}")
+
+    output_mem()
+
+    # Turn on the power to the NeoPixel
+    tinys3.set_pixel_power(True)
     print("Lift servo:")
     reader.output_settings(1)
 
@@ -187,6 +195,7 @@ async def main():
         client.subscribe([(topic, 0) for topic in topics])
         for topic, value in state_messages(blinds):
             client.publish(topic, str(value), retain=True)
+        client.publish(disc.topic("servo_health", "state"), health_json, retain=True)
 
     def on_message(client, topic, message):
         if topic == disc.topic("cover", "set"):
