@@ -3,7 +3,7 @@ Assistant.
 
 A restart the firmware triggers itself stores its cause in NVM, then resets
 through microcontroller.reset(): the magic, then the cause, in the two bytes
-at NVM_AT. NVM survives every reset, so the boot takes a stored cause only
+at NVM_OFFSET. NVM survives every reset, so the boot takes a stored cause only
 after a software reset, and clears it.
 
 Not sleep memory and a deep sleep: CircuitPython 9.1.1 fakes every deep
@@ -19,7 +19,7 @@ MAGIC = 0xB1
 
 # Where the stored cause's two bytes sit in microcontroller.nvm: right after
 # the 12-byte travel record at offset 0 (#13).
-NVM_AT = 12
+NVM_OFFSET = 12
 
 # The firmware-triggered causes, by the code in the record's second byte. A
 # watchdog reset has no restart of its own, but it keeps "watchdog" through
@@ -76,19 +76,22 @@ def boot_decision(stored, chip_reason):
         # after a software reset. The follow-up boot finds the cause, so
         # this restarts only once.
         return None, True, record(WATCHDOG)
-    return _CHIP_CAUSES.get(chip_reason, OTHER), False, bytes(2) if stored[0] == MAGIC else None
+    # A stale cause is cleared. With none stored, nothing is written: NVM is
+    # flash.
+    to_write = bytes(2) if stored[0] == MAGIC else None
+    return _CHIP_CAUSES.get(chip_reason, OTHER), False, to_write
 
 
 def at_boot():
     """This boot's reset cause, for publishing once connected. Clears the
-    stored cause. After a watchdog reset with none stored, it restarts once
-    instead, keeping "watchdog", and doesn't return."""
+    stored cause. After a watchdog reset, it restarts once instead, storing
+    "watchdog", and doesn't return."""
     import microcontroller
     chip_reason = _chip_reason()
     cause, restart_first, to_write = boot_decision(
-        bytes(microcontroller.nvm[NVM_AT:NVM_AT + 2]), chip_reason)
+        bytes(microcontroller.nvm[NVM_OFFSET:NVM_OFFSET + 2]), chip_reason)
     if to_write is not None:
-        microcontroller.nvm[NVM_AT:NVM_AT + 2] = to_write
+        microcontroller.nvm[NVM_OFFSET:NVM_OFFSET + 2] = to_write
     if restart_first:
         print("Watchdog reset: restarting once, so the web workflow starts.")
         microcontroller.reset()
@@ -100,7 +103,7 @@ def restart(cause):
     """Restart with a firmware-triggered cause, BROWNOUT to WATCHDOG: store
     it, then reset. Doesn't return."""
     import microcontroller
-    microcontroller.nvm[NVM_AT:NVM_AT + 2] = record(cause)
+    microcontroller.nvm[NVM_OFFSET:NVM_OFFSET + 2] = record(cause)
     microcontroller.reset()
 
 

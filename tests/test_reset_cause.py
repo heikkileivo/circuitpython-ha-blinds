@@ -16,24 +16,33 @@ CHIP_REASONS = ("POWER_ON", "BROWNOUT", "SOFTWARE", "DEEP_SLEEP_ALARM", "RESET_P
                 "WATCHDOG", "UNKNOWN", "RESCUE_DEBUG")
 
 
-def boot(memory, chip_reason):
+def boot(nvm, chip_reason):
     """One boot as code.py runs it: decide, write what the decision says to
     NVM, and return the cause to publish and whether to restart."""
-    cause, restart, to_write = boot_decision(bytes(memory[0:2]), chip_reason)
+    cause, restart, to_write = boot_decision(bytes(nvm[0:2]), chip_reason)
     if to_write is not None:
-        memory[0:2] = to_write
+        nvm[0:2] = to_write
     return cause, restart
 
 
 class WatchdogRestartTest(unittest.TestCase):
     def test_a_watchdog_reset_restarts_once_then_publishes_watchdog(self):
-        memory = bytearray(2)
+        nvm = bytearray(2)
 
-        self.assertEqual(boot(memory, "WATCHDOG"), (None, True))
+        self.assertEqual(boot(nvm, "WATCHDOG"), (None, True))
         # The restart is a software reset, which keeps NVM.
-        self.assertEqual(boot(memory, "SOFTWARE"), ("watchdog", False))
+        self.assertEqual(boot(nvm, "SOFTWARE"), ("watchdog", False))
         # Cleared, so a soft reload after it publishes the chip's reason.
-        self.assertEqual(boot(memory, "SOFTWARE"), ("software", False))
+        self.assertEqual(boot(nvm, "SOFTWARE"), ("software", False))
+
+
+    def test_a_watchdog_reset_with_a_stale_cause_still_restarts_once(self):
+        # The stale MQTT escalation doesn't count after a watchdog reset: the
+        # restart stores watchdog over it.
+        nvm = bytearray((0xB1, 3))
+
+        self.assertEqual(boot(nvm, "WATCHDOG"), (None, True))
+        self.assertEqual(boot(nvm, "SOFTWARE"), ("watchdog", False))
 
 
 class ChipReasonTest(unittest.TestCase):
@@ -66,11 +75,11 @@ class StoredCauseTest(unittest.TestCase):
                   4: "restart_loop", 5: "watchdog"}
         for code, cause in causes.items():
             with self.subTest(cause=cause):
-                memory = bytearray((0xB1, code))
+                nvm = bytearray((0xB1, code))
 
-                self.assertEqual(boot(memory, "SOFTWARE"), (cause, False))
+                self.assertEqual(boot(nvm, "SOFTWARE"), (cause, False))
                 # Both bytes zeroed, so a soft reload doesn't publish it again.
-                self.assertEqual(memory, bytearray(2))
+                self.assertEqual(nvm, bytearray(2))
 
     def test_nothing_is_written_when_nothing_is_stored(self):
         # NVM is flash, so a boot with nothing stored leaves it alone, blank
@@ -87,10 +96,10 @@ class StoredCauseTest(unittest.TestCase):
                     "RESET_PIN": "reset_pin", "DEEP_SLEEP_ALARM": "deep_sleep_alarm"}
         for reason, cause in expected.items():
             with self.subTest(reason=reason):
-                memory = bytearray((0xB1, 3))
+                nvm = bytearray((0xB1, 3))
 
-                self.assertEqual(boot(memory, reason), (cause, False))
-                self.assertEqual(memory, bytearray(2))
+                self.assertEqual(boot(nvm, reason), (cause, False))
+                self.assertEqual(nvm, bytearray(2))
 
 
 if __name__ == "__main__":
