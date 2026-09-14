@@ -1,10 +1,10 @@
+from end_sensors import UP as UP_SENSOR, DOWN as DOWN_SENSOR
 from packet import Address
 from revolutions import RevolutionCounter
 from servo_health import MoveFigures
 from tilt import read_at_boot
 import servo_health
 import cover_state
-import end_sensors
 import persist
 import servo_wait
 import stall
@@ -223,12 +223,12 @@ class Servo:
     def __repr__(self):
         return f"Motor {self._id}: Pos: {self._pos} V: {self._v} I: {self._i} L: {self._l} U: {self._u} T: {self._t}"
 
-async def watch_end_sensor(sensors, sensor, finish_event, callback):
-    """Call callback once the end sensor has been pressed since
-    sensors.watch(sensor), unless finish_event is set first."""
+async def watch_end_sensor(end_sensors, sensor, finish_event, callback):
+    """Call callback once the end sensor has gone active since
+    end_sensors.watch(sensor), unless finish_event is set first."""
     print(f"Watching end sensor {sensor}...")
     while not finish_event.is_set():
-        if sensors.reached(sensor):
+        if end_sensors.reached(sensor):
             callback()
             break
         await asyncio.sleep(0)
@@ -292,7 +292,7 @@ class Blinds:
         POSITION_MOVING_UP = cover_state.MOVING_UP
         POSITION_MOVING_DOWN = cover_state.MOVING_DOWN
 
-        def __init__(self, reader, update_callback, on_opened, on_moved, sensors, tilt_scale):
+        def __init__(self, reader, update_callback, on_opened, on_moved, end_sensors, tilt_scale):
             self._reader = reader
             self._update_callback = update_callback
             self._on_opened = on_opened
@@ -300,13 +300,13 @@ class Blinds:
             self._moves = 0             # Moves under way, tilt-only ones included
             self._lift_servo = Servo(1, reader)
             self._tilt_servo = Servo(2, reader, scale=tilt_scale)
-            self._end_sensors = sensors
+            self._end_sensors = end_sensors
             # The cover state starts as worked out at boot, from the end
             # sensors and the record in NVM. The record keeps an interrupted
             # move's direction.
             self._store = persist.Store(microcontroller.nvm)
-            self._position = cover_state.at_boot(sensors.active(end_sensors.UP),
-                                                 sensors.active(end_sensors.DOWN),
+            self._position = cover_state.at_boot(end_sensors.active(UP_SENSOR),
+                                                 end_sensors.active(DOWN_SENSOR),
                                                  self._store.state)
             print(f"Cover state at boot: {self._position}, stored {self._store.state}.")
             h = os.getenv("window_height", 1800.0)
@@ -465,7 +465,7 @@ class Blinds:
             the stored state as it was: the blind hasn't moved."""
             # The end sensor toward end is watched from here on: a press that
             # comes later, even before the lift starts, ends the move.
-            sensor = end_sensors.UP if end == Blinds.POSITION_UP else end_sensors.DOWN
+            sensor = UP_SENSOR if end == Blinds.POSITION_UP else DOWN_SENSOR
             if self._end_sensors.watch(sensor):
                 print("Already at stopped state.")
                 self._save_state(end)

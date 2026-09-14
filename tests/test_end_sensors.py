@@ -27,7 +27,7 @@ class Event:
 
 
 class EventQueue:
-    """A full queue drops its oldest event."""
+    """A full queue drops the new event, and sets overflowed."""
 
     def __init__(self, max_events):
         self._events = []
@@ -36,8 +36,8 @@ class EventQueue:
 
     def record(self, key_number, pressed):
         if len(self._events) == self._max_events:
-            self._events.pop(0)
             self.overflowed = True
+            return
         self._events.append(Event(key_number, pressed))
 
     def get(self):
@@ -84,8 +84,8 @@ class FakeKeys:
         self.scan()
 
 
-def build(firmware, up=False, down=False):
-    keys = FakeKeys([up, down], FIRMWARES[firmware])
+def build(firmware, up=False, down=False, max_events=64):
+    keys = FakeKeys([up, down], FIRMWARES[firmware], max_events)
     return keys, EndSensors(keys, FIRMWARES[firmware])
 
 
@@ -111,7 +111,7 @@ class WatchTest(unittest.TestCase):
                 keys.set(UP, True)
                 self.assertTrue(sensors.reached(UP))
 
-    def test_a_press_that_chatters_off_before_the_poll_still_counts(self):
+    def test_an_end_sensor_that_chatters_off_before_the_poll_still_counts(self):
         # The bench saw the up end sensor go off and on again within 190 ms,
         # and a poll can wait that long behind a UART read.
         for firmware in FIRMWARES:
@@ -124,7 +124,7 @@ class WatchTest(unittest.TestCase):
 
                 self.assertTrue(sensors.reached(UP))
 
-    def test_a_press_before_the_move_started_doesnt_count(self):
+    def test_going_active_before_the_move_started_doesnt_count(self):
         # The blind settled off the up end sensor overnight, and chattered
         # on its way.
         for firmware in FIRMWARES:
@@ -147,17 +147,16 @@ class WatchTest(unittest.TestCase):
 
                 self.assertFalse(sensors.reached(DOWN))
 
-    def test_a_press_lost_to_a_full_queue_is_found_from_the_level(self):
+    def test_a_press_dropped_by_a_full_queue_is_found_from_the_level(self):
         for firmware in FIRMWARES:
             with self.subTest(firmware=firmware):
-                keys = FakeKeys([False, False], FIRMWARES[firmware], max_events=2)
-                sensors = EndSensors(keys, FIRMWARES[firmware])
+                keys, sensors = build(firmware, down=True, max_events=1)
                 sensors.watch(UP)
 
-                keys.set(UP, True)
-                # The down end sensor's chatter pushes the press out.
-                keys.set(DOWN, True)
+                # The blind leaves the down end sensor, whose release fills
+                # the queue, so the up end sensor's press is dropped.
                 keys.set(DOWN, False)
+                keys.set(UP, True)
 
                 self.assertTrue(sensors.reached(UP))
 
