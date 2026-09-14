@@ -106,8 +106,8 @@ def idle_reads(reader):
 def _health_read(reader, scs_id, stop_confirmed):
     """Ping the servo, and read 62-66 (voltage, temperature, async write
     flag, status, moving) in one transaction."""
-    ping_error = _first_reply(lambda: reader.ping(scs_id))
-    block = None if ping_error is None else _first_reply(
+    ping_error = first_reply(lambda: reader.ping(scs_id))
+    block = None if ping_error is None else first_reply(
         lambda: reader.read(scs_id, Address.PRESENT_VOLTAGE, 5))
     if block is None:
         print(f"Servo {scs_id}: no reply to the health read.")
@@ -122,7 +122,7 @@ def _health_read(reader, scs_id, stop_confirmed):
                      uart_errors=reader.uart_errors(scs_id))
 
 
-def _first_reply(transaction):
+def first_reply(transaction):
     """Run a transaction up to ATTEMPTS times. Returns its first result that
     isn't None, or None."""
     for _ in range(ATTEMPTS):
