@@ -83,11 +83,11 @@ class StoreTest(unittest.TestCase):
                          (cover_state.MOVING_UP, 12.5, 27.75))
         self.assertEqual(nvm.writes, [])
 
-    def test_a_save_writes_the_whole_record_once_and_keeps_full_travel(self):
+    def test_a_save_writes_the_whole_record_once(self):
         nvm = CountingNvm(persist.encode(cover_state.DOWN, 0.0, 27.75) + RESET_CAUSE)
         store = persist.Store(nvm)
 
-        store.save(cover_state.MOVING_UP, persist.NAN)
+        store.save(cover_state.MOVING_UP, persist.NAN, 27.75)
 
         self.assertEqual(nvm.writes, [slice(0, 12)])
         state, travel, full_travel = persist.decode(nvm[0:12])
@@ -101,18 +101,30 @@ class StoreTest(unittest.TestCase):
         nvm = CountingNvm(persist.encode(cover_state.STOPPED, persist.NAN, persist.NAN) + RESET_CAUSE)
         store = persist.Store(nvm)
 
-        store.save(cover_state.STOPPED, float("nan"))
-        store.save(cover_state.UP, persist.NAN)
-        store.save(cover_state.UP, persist.NAN)
+        store.save(cover_state.STOPPED, float("nan"), persist.NAN)
+        store.save(cover_state.UP, persist.NAN, persist.NAN)
+        store.save(cover_state.UP, persist.NAN, persist.NAN)
 
         self.assertEqual(nvm.writes, [slice(0, 12)])
+
+    def test_a_learned_full_travel_changes_the_record(self):
+        nvm = CountingNvm(persist.encode(cover_state.UP, 27.75, 27.75) + RESET_CAUSE)
+        store = persist.Store(nvm)
+
+        store.save(cover_state.UP, 27.9, 27.9)
+
+        self.assertEqual(nvm.writes, [slice(0, 12)])
+        state, _travel, full_travel = persist.decode(nvm[0:12])
+        self.assertEqual(state, cover_state.UP)
+        self.assertAlmostEqual(full_travel, 27.9, places=5)
+        self.assertEqual(store.full_travel, 27.9)
 
     def test_a_blank_nvm_gets_a_whole_record(self):
         nvm = CountingNvm(bytes(14))
         store = persist.Store(nvm)
         self.assertEqual(store.state, cover_state.UNKNOWN)
 
-        store.save(cover_state.DOWN, persist.NAN)
+        store.save(cover_state.DOWN, persist.NAN, persist.NAN)
 
         self.assertEqual(nvm.writes, [slice(0, 12)])
         self.assertEqual(persist.decode(nvm[0:12])[0], cover_state.DOWN)

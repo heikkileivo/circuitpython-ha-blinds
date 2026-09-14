@@ -13,13 +13,12 @@ lift, measured every 10 ms, is in tests/data.
 """
 
 import unittest
-from pathlib import Path
 
 from stall import StallDetector
 
+from .lift_samples import MEASURED_EVERY_MS, as_sampled, measured_phases
+
 SAMPLE_MS = 50
-MEASURED = Path(__file__).resolve().parent / "data" / "lift_wrap_samples_2026-09-13.txt"
-MEASURED_EVERY_MS = 10
 
 
 def turning(duty, speed, angle, start_ms, end_ms):
@@ -55,28 +54,6 @@ def into_stall(duty, angle):
     stalled with the servo angle at angle."""
     start = 200 if duty < 0 else 900
     return turning(duty, -duty, start, 0, 1000) + stalled(duty, angle, 1000, 2000)
-
-
-def measured_phases():
-    """The measured samples, as {phase: (duty, [(time in ms, servo angle,
-    speed)])}."""
-    phases = {}
-    for line in MEASURED.read_text().splitlines():
-        if line and not line.startswith("#"):
-            name, duty, t, angle, speed, _voltage = line.split()
-            phases.setdefault(name, (int(duty), []))[1].append((int(t), int(angle), int(speed)))
-    return phases
-
-
-def as_sampled(duty, samples, offset):
-    """The firmware's view of the measured samples: one every SAMPLE_MS, the
-    first at offset."""
-    picked, due = [], offset
-    for t, angle, speed in samples:
-        if t >= due:
-            picked.append((t, angle, speed, duty))
-            due = t + SAMPLE_MS
-    return picked
 
 
 class StallDetectorTest(unittest.TestCase):
@@ -153,7 +130,7 @@ class StallDetectorTest(unittest.TestCase):
         for name, (duty, samples) in measured_phases().items():
             for offset in range(0, SAMPLE_MS, MEASURED_EVERY_MS):
                 with self.subTest(phase=name, offset=offset):
-                    self.assertIsNone(first_stall(as_sampled(duty, samples, offset)))
+                    self.assertIsNone(first_stall(as_sampled(duty, samples, offset, SAMPLE_MS)))
 
     def test_a_start_from_rest_in_the_dead_zone_isnt_stalled(self):
         # Up at duty 300 from rest at 1022: the servo angle holds, wraps
