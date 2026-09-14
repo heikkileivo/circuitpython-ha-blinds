@@ -4,6 +4,7 @@ from servo_health import MoveFigures
 from tilt import read_at_boot
 import servo_health
 import cover_state
+import lift_stop
 import persist
 import servo_wait
 import stall
@@ -196,22 +197,25 @@ class Servo:
         return True
 
     async def stop(self):
-        """Stop the servo: duty 0, then torque off once it has stopped
-        moving, or once lift_stop_deadline_ms has passed. Returns whether
-        the stop is confirmed: duty 0 and torque off both read back."""
+        """Stop the lift with its stop sequence (lift_stop): duty 0, then
+        the brake once it has stopped moving, or once lift_stop_deadline_ms
+        has passed. A duty 0 that isn't confirmed leaves it limp instead, at
+        once. Returns how the sequence ended."""
         print(f"Stopping servo...")
         duty_0 = self._write_duty_0()
-        deadline_ms = os.getenv("lift_stop_deadline_ms", servo_wait.STOP_DEADLINE_MS)
-        if not await servo_wait.until_still(lambda: self.is_moving, now_ms, deadline_ms):
-            print(f"Servo {self._id} didn't stop moving within {deadline_ms} ms.")
-            # It may have missed the first duty 0.
-            duty_0 = self._write_duty_0()
-        limp = self.torque_off()
-        print(f"Servo {self._id} stopped: duty 0 confirmed {duty_0}, torque off confirmed {limp}.")
-        return duty_0 and limp
+        if duty_0 == lift_stop.CONFIRMED:
+            deadline_ms = os.getenv("lift_stop_deadline_ms", servo_wait.STOP_DEADLINE_MS)
+            if not await servo_wait.until_still(lambda: self.is_moving, now_ms, deadline_ms):
+                print(f"Servo {self._id} didn't stop moving within {deadline_ms} ms.")
+                # It may have missed the first duty 0.
+                duty_0 = self._write_duty_0()
+        end = servo_health.stop_lift(self._reader, duty_0)
+        print(f"Servo {self._id} stopped: {end}.")
+        return end
 
     def _write_duty_0(self):
-        """Write duty 0, and read it back. Returns whether it's confirmed."""
+        """Write duty 0, and read it back. Returns the read-back's outcome,
+        one of lift_stop's."""
         self._duty = 0
         return servo_health.write_duty_0(self._reader, self._id)
 
@@ -326,6 +330,8 @@ class Blinds:
             self._revolutions = 0
             self._opened = 0
             self._tilt_move = None      # The tilt-only move's task, if one ran
+            # Set once a lift stop isn't confirmed, which code.py escalates.
+            self.stop_failed = asyncio.Event()
 
 
         @property
@@ -464,7 +470,9 @@ class Blinds:
         async def operate(self, end, speed, slow_speed, approach_revs, timeout, from_end):
             """Drive the lift until its end sensor, and stop it. Returns how
             the move ended, one of cover_state's results: the first way to
-            come, or STOP_FAILED if the lift's stop wasn't confirmed.
+            come, or STOP_FAILED if the lift's stop wasn't confirmed. Every
+            exit, exceptions and cancellation included, ends with the lift's
+            stop sequence, which leaves it braking.
 
             It drives at speed, then at slow_speed, the approach speed,
             within approach_revs of the end by travel, or all the way with
@@ -577,17 +585,11 @@ class Blinds:
                 finish_event.set()
                 if wait_task is not None:
                     wait_task.cancel()
+                # However the move ends, stop the lift.
+                stopped = await self._stop_lift()
 
-            # However the move ended, stop the lift. An exception from here
-            # would leave the cover state opening or closing, and MQTT paused.
-            try:
-                stopped = await self._lift_servo.stop()
-            except Exception as e:
-                print(f"Exception occurred while stopping: {e!r}")
-                stopped = False
             if not stopped:
                 print("Failed to stop the lift servo.")
-                self._tracker.lose()
                 return cover_state.STOP_FAILED
             if lift_started:
                 self._feed_rest_angle()
@@ -602,6 +604,26 @@ class Blinds:
             print(f"Moved {tracker.moved} revolutions: travel {tracker.travel}, full travel {tracker.full_travel}.")
             self._save_state(cover_state.after_move(result, end))
             return result
+
+        async def _stop_lift(self):
+            """Stop the lift with its stop sequence, which leaves it braking.
+            Returns whether it stopped: its duty 0 confirmed. If not, it's
+            left limp if it could be, the travel is lost, and stop_failed is
+            set."""
+            # An exception from here would leave the cover state opening or
+            # closing, and MQTT paused.
+            try:
+                end = await self._lift_servo.stop()
+            except Exception as e:
+                # main()'s finally runs the stop sequence again, which writes
+                # torque 0 if duty 0 still isn't confirmed.
+                print(f"Exception occurred while stopping: {e!r}")
+                end = lift_stop.STOP_UNCONFIRMED
+            if lift_stop.stopped(end):
+                return True
+            self._tracker.lose()
+            self.stop_failed.set()
+            return False
 
         def _feed_rest_angle(self):
             """Feed the travel tracker the lift's servo angle once it has
@@ -663,15 +685,9 @@ class Blinds:
 
         async def stop(self):
             print("Stopping blinds...")
-            try:
-                stopped = await self._lift_servo.stop()
-            except Exception as e:
-                print(f"Failed to stop lift servo: {e!r}")
-                stopped = False
+            stopped = await self._stop_lift()
             # Unknown if the stop wasn't confirmed: the lift may be driving.
             self._position = Blinds.POSITION_STOPPED if stopped else Blinds.POSITION_UNKNOWN
-            if not stopped:
-                self._tracker.lose()
             self._save_state(self._position)
             self.report_state()
             print("Blinds stopped.")

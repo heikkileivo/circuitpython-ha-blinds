@@ -208,8 +208,14 @@ class Reader:
         return self.write_word(scs_id, Address.GOAL_SPEED_L, speed)
 
     def uart_errors(self, scs_id):
-        """How many transactions with this servo got no good reply."""
+        """How many transactions with this servo got no good reply, and
+        other UART errors counted with count_uart_error()."""
         return self._uart_errors.get(scs_id, 0)
+
+    def count_uart_error(self, scs_id):
+        """Count a UART error with this servo that no transaction counted,
+        such as a lift brake that couldn't be confirmed."""
+        self._uart_errors[scs_id] = self.uart_errors(scs_id) + 1
 
     def _transaction(self, scs_id, instruction, params, n, timeout=READ_TIMEOUT_S):
         """Send one request and read its reply, 6 + n bytes, in one read.
@@ -221,7 +227,7 @@ class Reader:
         reply = self.uart.read(6 + n)
         problem = reply_problem(reply, scs_id, n)
         if problem:
-            self._uart_errors[scs_id] = self.uart_errors(scs_id) + 1
+            self.count_uart_error(scs_id)
             print(f"Servo {scs_id}: {problem}: {reply!r}")
             return None
         return reply[4], reply[5:5 + n]

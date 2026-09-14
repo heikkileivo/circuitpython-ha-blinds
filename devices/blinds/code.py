@@ -9,7 +9,7 @@ import wifi
 import asyncio
 import keypad
 import time
-from blinds import Blinds
+from blinds import Blinds, ServoException
 from end_sensors import EndSensors
 from packet import Reader
 from components import blinds_discovery
@@ -256,8 +256,9 @@ async def main():
         await run_blind(reader, EndSensors(keys, KEYS_RESET_REPORTS_PRESSED))
     finally:
         # Only a failure ends a run, and its move no longer runs: stop the
-        # servos, then free the UART and the end sensors' pins for the next
-        # run.
+        # servos, which leaves the lift braking, or limp if its duty 0 isn't
+        # confirmed. Then free the UART and the end sensors' pins for the
+        # next run.
         try:
             servo_health.stop_servos(reader)
         except Exception as e:
@@ -376,10 +377,10 @@ async def run_blind(reader, end_sensors):
     # The lift and tilt servos' figures from the last move.
     last_moves = (None, None)
 
-    def publish_servo_health():
+    def publish_servo_health(lift_stop_confirmed=True):
         # Read both servos idle, and publish their health with the last
         # move's figures.
-        lift_read, tilt_read = servo_health.idle_reads(reader)
+        lift_read, tilt_read = servo_health.idle_reads(reader, lift_stop_confirmed)
         servo_states["servo_health"] = health_json(lift_read, tilt_read, *last_moves)
         publish_if_connected(mqtt, disc.topic("servo_health", "state"),
                              servo_states["servo_health"], retain=True)
@@ -401,6 +402,14 @@ async def run_blind(reader, end_sensors):
             servo_states["servo_min_voltage"] = min_voltage
             publish_if_connected(mqtt, disc.topic("servo_min_voltage", "state"), min_voltage, retain=True)
         asyncio.create_task(publish_servo_health_settled())
+
+    async def escalate_failed_stop():
+        # A lift stop that wasn't confirmed has left the lift limp, if it
+        # could. Publish the servo health as an error, then fail main(): the
+        # restart loop takes over, and its next run re-runs the boot re-init.
+        await blinds.stop_failed.wait()
+        publish_servo_health(lift_stop_confirmed=False)
+        raise ServoException("The lift's stop wasn't confirmed.")
 
     # The blind works out its cover state at boot, which the first connect
     # publishes.
@@ -428,6 +437,7 @@ async def run_blind(reader, end_sensors):
     tasks.append(asyncio.create_task(status_blinker(blinds)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
     tasks.append(asyncio.create_task(read_servos_while_idle(blinds, publish_servo_health)))
+    tasks.append(asyncio.create_task(escalate_failed_stop()))
 
     await asyncio.gather(*tasks)
 
