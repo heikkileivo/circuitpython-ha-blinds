@@ -1,6 +1,7 @@
 from packet import Address
 from revolutions import RevolutionCounter
 from servo_health import MoveFigures
+from tilt import read_at_boot
 import servo_health
 import cover_state
 import servo_wait
@@ -317,7 +318,9 @@ class Blinds:
             d = os.getenv("spindle_diameter", 20.0)
             self._max_revolutions = int( h / (d * 3.14159)) # ToDo: add settings
             self._tilt_scale = tilt_scale
-            self._tilt = 50
+            # code.py builds the blind after the boot re-init has stopped
+            # the servos, and before the first connect publishes the tilt.
+            self._tilt = read_at_boot(reader, tilt_scale)
             self._speed = os.getenv("default_speed", 800)
             self._servo_position = 0
             self._revolutions = 0
@@ -333,16 +336,23 @@ class Blinds:
         def tilt(self, value):
             self._tilt = value
             if self._position == Blinds.POSITION_DOWN:
-                # A tilt-only move.
+                # A tilt-only move, which publishes the state once it ends.
                 self._cancel_tilt_move()
                 self._tilt_move = asyncio.create_task(self._as_move(self._tilt_only(self._tilt)))
+            else:
+                # Not closed, the tilt is the next close's target, and no
+                # servo drives to it now. Publish it at once.
+                self.report_state()
 
         async def _tilt_only(self, value):
-            """A tilt-only move to value. A tilt that doesn't arrive leaves
-            the cover state stopped, as after any timeout."""
+            """A tilt-only move to value, which publishes the state once it
+            ends. A tilt that doesn't arrive leaves the cover state stopped,
+            as after any timeout. A move that a later tilt command cancels
+            publishes nothing: the later move publishes when it ends."""
             if not await self.drive_tilt(value):
                 self._position = Blinds.POSITION_STOPPED
-                self.report_state()
+            # A cancel is raised in drive_tilt's wait, so never gets here.
+            self.report_state()
 
         def _cancel_tilt_move(self):
             """Cancel a tilt-only move still under way, before a later drive
@@ -384,9 +394,6 @@ class Blinds:
             if not servo.torque_off():
                 print("Failed to turn the tilt servo's torque off.")
             return arrived
-
-        async def report_state(self):
-            pass
 
         @property
         def speed(self):

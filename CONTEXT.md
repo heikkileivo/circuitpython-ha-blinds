@@ -10,6 +10,10 @@ Home-built CircuitPython devices that report to and are controlled from Home Ass
 What Home Assistant is told about a blind: open, closed, opening, closing, stopped or unknown.
 _Avoid_: Position (when meaning the state), blinds state
 
+**Tilt**:
+How far the slats are turned, 0–100, as published to Home Assistant. While the blind is closed, it's the slats' angle. Otherwise it's the tilt the next close will drive the slats to. The slats sit at 50 meanwhile, as every open and close turns them to 50 before the lift moves.
+_Avoid_: Tilt position, slat angle, servo angle (the tilt servo's raw reading)
+
 **Travel**:
 How far the blind is from its bottom end, measured in revolutions of the lift spindle.
 _Avoid_: Position estimate, revolution count, height
