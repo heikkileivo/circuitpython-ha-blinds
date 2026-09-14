@@ -388,6 +388,8 @@ async def run_blind(reader):
             publish_if_connected(mqtt, disc.topic("servo_min_voltage", "state"), min_voltage, retain=True)
         asyncio.create_task(publish_servo_health_settled())
 
+    # The blind works out its cover state at boot, which the first connect
+    # publishes.
     blinds = Blinds(reader,
         report_state,
         on_opened,
@@ -395,7 +397,6 @@ async def run_blind(reader):
         board.D1,
         board.D2,
         tilt_scale)
-    blinds.find_out_current_state()
 
     # From here on this task feeds the watchdog, through the Wi-Fi connect's
     # retries too.
