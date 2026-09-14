@@ -1,6 +1,6 @@
-"""The cover state a move of the blind leaves, from how the move ended (#46).
+"""The cover state a move of the blind leaves, from how the move ended (#46),
+and the cover state at boot, from the end sensors and NVM (host test 2, #49).
 An open or close ends open or closed only when it reached the end sensor.
-And the cover state at boot (host test 2, #49).
 """
 
 import unittest
@@ -47,8 +47,8 @@ class AtBootTest(unittest.TestCase):
                                  cover_state.UP)
 
     def test_a_settled_state_holds_with_neither_end_sensor_active(self):
-        # For example, the blind settled off the up end sensor once the
-        # torque went off.
+        # For example, the blind settled off the up end sensor once the lift
+        # went limp.
         for stored in (cover_state.UP, cover_state.DOWN, cover_state.STOPPED):
             with self.subTest(stored=stored):
                 self.assertEqual(at_boot(up_active=False, down_active=False, stored=stored),

@@ -10,6 +10,7 @@ import unittest
 
 import cover_state
 import persist
+import reset_cause
 
 
 class RecordTest(unittest.TestCase):
@@ -18,6 +19,9 @@ class RecordTest(unittest.TestCase):
         # travel 27.75 as little-endian float32.
         self.assertEqual(persist.encode(cover_state.UP, 12.5, 27.75),
                          bytes((0xB1, 1, 1, 0, 0, 0, 0x48, 0x41, 0, 0, 0xDE, 0x41)))
+
+    def test_the_record_ends_where_the_reset_cause_starts(self):
+        self.assertEqual(persist.SIZE, reset_cause.NVM_OFFSET)
 
     def test_each_cover_state_has_its_code(self):
         codes = {cover_state.UP: 1, cover_state.DOWN: 2, cover_state.STOPPED: 3,
@@ -92,7 +96,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(nvm[12:14], RESET_CAUSE)
         self.assertEqual(store.state, cover_state.MOVING_UP)
 
-    def test_a_save_that_changes_nothing_writes_nothing(self):
+    def test_only_a_save_that_changes_the_record_writes(self):
         # NaN travel included: CircuitPython doesn't skip identical writes.
         nvm = CountingNvm(persist.encode(cover_state.STOPPED, persist.NAN, persist.NAN) + RESET_CAUSE)
         store = persist.Store(nvm)

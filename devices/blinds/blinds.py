@@ -453,26 +453,31 @@ class Blinds:
         def position(self, value):
             self._position = value
 
-        def _save_state(self):
-            """Store the cover state in NVM, only while the lift servo is
-            stopped: opening or closing just before it starts, and the state
-            after a confirmed stop. Unknown follows a stop that wasn't
-            confirmed, when the lift may be driving, so it isn't stored: the
-            stored opening or closing stays, and the next boot takes it as an
-            interrupted move. Travel stays unknown until it's tracked (#50)."""
-            if self._position == Blinds.POSITION_UNKNOWN:
+        def _save_state(self, state):
+            """Store a cover state in NVM, while the lift servo is stopped.
+            Unknown follows a stop that wasn't confirmed, when the lift may
+            be driving, so it isn't stored. Travel stays unknown until it's
+            tracked (#50)."""
+            if state == Blinds.POSITION_UNKNOWN:
                 return
             try:
-                self._store.save(self._position, persist.NAN)
+                self._store.save(state, persist.NAN)
             except Exception as e:
                 print(f"Failed to store the cover state: {e!r}")
 
-        async def operate(self, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
+        async def operate(self, end, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
             """Drive the lift until its end sensor, and stop it. Returns how
             the move ended, one of cover_state's results: the first way to
-            come, or STOP_FAILED if the lift's stop wasn't confirmed."""
+            come, or STOP_FAILED if the lift's stop wasn't confirmed.
+
+            It stores the opening or closing just before the lift starts, so
+            a reset mid-move boots as an interrupted move, and the state the
+            move leaves toward end, UP or DOWN, after the confirmed stop. A
+            move whose lift never started, as its tilt didn't arrive, leaves
+            the stored state as it was: the blind hasn't moved."""
             if get_pin_value(stop_pin):
                 print("Already at stopped state.")
+                self._save_state(end)
                 return cover_state.REACHED
             finish_event = asyncio.Event()
             result = None
@@ -519,6 +524,7 @@ class Blinds:
 
             tasks = []
             wait_task = None
+            lift_started = False
             try:
                 tasks.append(asyncio.create_task(
                     poll_pin(stop_pin,
@@ -544,9 +550,8 @@ class Blinds:
                 if not await self.drive_tilt(50):
                     finish(cover_state.TIMED_OUT)
                 else:
-                    # Opening or closing, just before the lift starts, so a
-                    # reset from here on boots as an interrupted move.
-                    self._save_state()
+                    self._save_state(self._position)
+                    lift_started = True
                     print("Starting lift servo...")
                     self._lift_servo.enable_torque = True
 
@@ -578,6 +583,8 @@ class Blinds:
             if not stopped:
                 print("Failed to stop the lift servo.")
                 return cover_state.STOP_FAILED
+            if lift_started:
+                self._save_state(cover_state.after_move(result, end))
             return result
 
         async def close(self):
@@ -588,7 +595,8 @@ class Blinds:
             self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
-            result = await self.operate(self._down_pin,                              # Stop when down pin reached
+            result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward
+                                self._down_pin,                              # Stop when down pin reached
                                 None,                               # Reverse if up pin reached
                                 self._speed,                               # Drive in negative direction
                                 self._max_revolutions,                      # Stop when max reached
@@ -601,7 +609,6 @@ class Blinds:
             if result == cover_state.REACHED and not await self.drive_tilt(self._tilt):
                 result = cover_state.TIMED_OUT
             self._position = cover_state.after_move(result, Blinds.POSITION_DOWN)
-            self._save_state()
             self.report_state()
             print(f"Completed closing blinds: {result}.")
 
@@ -613,7 +620,8 @@ class Blinds:
             self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()
-            result = await self.operate(self._up_pin,                                # Stop if up pin reached
+            result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward
+                                self._up_pin,                                # Stop if up pin reached
                                 None,                                       # Ignore up pin
                                 -self._speed,                                # Drive in positive direction
                                 self._max_revolutions,                      # Stop when max reached
@@ -622,7 +630,6 @@ class Blinds:
                                 True,                                       # The servo angle counts up while opening
                                 os.getenv("open_timeout", 45))              # Timeout
             self._position = cover_state.after_move(result, Blinds.POSITION_UP)
-            self._save_state()
             self.report_state()
             # Only an open that reached the end sensor counts.
             if self._position == Blinds.POSITION_UP:
@@ -639,7 +646,7 @@ class Blinds:
                 stopped = False
             # Unknown if the stop wasn't confirmed: the lift may be driving.
             self._position = Blinds.POSITION_STOPPED if stopped else Blinds.POSITION_UNKNOWN
-            self._save_state()
+            self._save_state(self._position)
             self.report_state()
             print("Blinds stopped.")
 
