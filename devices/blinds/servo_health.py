@@ -1,12 +1,14 @@
 """Servo health: whether the blind's servos answer and report no error, as
 published to Home Assistant, with the servo diagnostics behind it: each
 servo's lowest supply voltage and peak load during a move, and its idle
-voltage and temperature. Also the boot re-init that stops the servos, and
-the health reads at boot and while idle. The classification and the move
-figures are pure, and the reads only need a Reader, so the host tests run
-them all, the reads on a fake servo bus."""
+voltage and temperature. Also the servos' stop writes, with the lift's stop
+sequence, the boot re-init that stops the servos, and the health reads at
+boot and while idle. The classification and the move figures are pure, and
+the reads and writes only need a Reader, so the host tests run them all, the
+reads and writes on a fake servo bus."""
 
 from packet import Address
+import lift_stop
 
 LIFT_ID = 1
 TILT_ID = 2
@@ -63,44 +65,68 @@ def servo_min_voltage(lift_move, tilt_move):
     return _volts(min(voltages)) if voltages else None
 
 
+# Each write of the lift's stop sequence, as (address, data).
+_STOP_WRITES = {lift_stop.DUTY_0: (Address.GOAL_TIME_L, [0, 0]),
+                lift_stop.BRAKE: (Address.TORQUE_ENABLE, [2]),
+                lift_stop.FALLBACK_BRAKE: (Address.TORQUE_ENABLE, [1]),
+                lift_stop.LIMP: (Address.TORQUE_ENABLE, [0])}
+
+
 def stop_servos(reader):
     """Stop both servos, which a controller reset leaves doing whatever
-    they were doing. Returns whether the lift's and the tilt's stops were
-    confirmed."""
-    # Duty 0 first: it stops a stalled lift at once. Torque off then leaves
-    # both limp, and is written even if the duty wasn't confirmed.
-    lift_duty_0 = write_duty_0(reader, LIFT_ID)
-    lift_limp = torque_off(reader, LIFT_ID)
-    tilt_limp = torque_off(reader, TILT_ID)
-    return lift_duty_0 and lift_limp, tilt_limp
+    they were doing: the lift with its stop sequence, which leaves it
+    braking, and the tilt limp. Returns how the lift's stop sequence ended,
+    and whether the tilt's torque off was confirmed."""
+    return stop_lift(reader), torque_off(reader, TILT_ID)
+
+
+def stop_lift(reader, duty_0_outcome=None):
+    """Carry out the lift's stop sequence (lift_stop). duty_0_outcome is the
+    outcome of a duty 0 the caller has written already, or None to start
+    with it. Returns how the sequence ended."""
+    step, outcome = ((None, None) if duty_0_outcome is None
+                     else (lift_stop.DUTY_0, duty_0_outcome))
+    while True:
+        step = lift_stop.next_step(step, outcome)
+        if step in lift_stop.ENDS:
+            break
+        outcome = _write_checked(reader, LIFT_ID, *_STOP_WRITES[step])
+        print(f"Lift stop: {step} {outcome}.")
+    if step == lift_stop.BRAKE_UNCONFIRMED:
+        # The motor has stopped anyway, so main() doesn't fail.
+        reader.count_uart_error(LIFT_ID)
+    print(f"Lift stop: {step}.")
+    return step
 
 
 def write_duty_0(reader, scs_id):
-    """Write duty 0 to a servo in wheel mode, and read it back. Returns
-    whether it's confirmed."""
-    return _write_zero(reader, scs_id, Address.GOAL_TIME_L, 2)
+    """Write duty 0 to a servo in wheel mode, and read it back. Returns the
+    read-back's outcome, one of lift_stop's."""
+    return _write_checked(reader, scs_id, *_STOP_WRITES[lift_stop.DUTY_0])
 
 
 def torque_off(reader, scs_id):
     """Turn a servo's torque off, leaving it limp, and read it back. Returns
     whether it's confirmed off."""
-    return _write_zero(reader, scs_id, Address.TORQUE_ENABLE, 1)
+    return _write_checked(reader, scs_id, *_STOP_WRITES[lift_stop.LIMP]) == lift_stop.CONFIRMED
 
 
 def boot_reinit(reader):
-    """Stop both servos, then read their health. Returns the lift and tilt
-    servos' health reads."""
-    lift_stop_confirmed, tilt_stop_confirmed = stop_servos(reader)
-    return (_health_read(reader, LIFT_ID, lift_stop_confirmed),
+    """Stop both servos, which leaves the lift braking, then read their
+    health. Returns the lift and tilt servos' health reads."""
+    lift_end, tilt_stop_confirmed = stop_servos(reader)
+    return (_health_read(reader, LIFT_ID, lift_stop.stopped(lift_end)),
             _health_read(reader, TILT_ID, tilt_stop_confirmed))
 
 
-def idle_reads(reader):
+def idle_reads(reader, lift_stop_confirmed=True):
     """Read both servos' health while neither is driving: after a move has
     settled, and now and then while the blind is idle. Returns the lift and
-    tilt servos' health reads. There's no stop of their own to confirm, and
-    the moving flag is only logged, as at boot."""
-    return _health_read(reader, LIFT_ID, True), _health_read(reader, TILT_ID, True)
+    tilt servos' health reads. The moving flag is only logged, as at boot.
+    After a lift stop that wasn't confirmed, lift_stop_confirmed is False, so
+    the lift's health is an error, or no reply."""
+    return (_health_read(reader, LIFT_ID, lift_stop_confirmed),
+            _health_read(reader, TILT_ID, True))
 
 
 def _health_read(reader, scs_id, stop_confirmed):
@@ -132,15 +158,20 @@ def first_reply(transaction):
     return None
 
 
-def _write_zero(reader, scs_id, address, n):
-    """Write 0 to an n-byte register and read it back, up to ATTEMPTS
-    times. Returns True once it reads back 0."""
+def _write_checked(reader, scs_id, address, data):
+    """Write data from address onwards and read it back, up to ATTEMPTS
+    times. Returns lift_stop's CONFIRMED once it reads back as written.
+    Otherwise REFUSED if the servo ever answered with another value, as a
+    write may have been lost, or NO_REPLY."""
+    outcome = lift_stop.NO_REPLY
     for _ in range(ATTEMPTS):
-        reader.write_mem(scs_id, address, [0] * n)
-        reply = reader.read(scs_id, address, n)
-        if reply is not None and not any(reply[1]):
-            return True
-    return False
+        reader.write_mem(scs_id, address, data)
+        reply = reader.read(scs_id, address, len(data))
+        if reply is not None:
+            if list(reply[1]) == data:
+                return lift_stop.CONFIRMED
+            outcome = lift_stop.REFUSED
+    return outcome
 
 
 def classify(read):
