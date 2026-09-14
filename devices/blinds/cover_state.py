@@ -16,6 +16,8 @@ SETTLED = (UP, DOWN, STOPPED)
 REACHED = "end sensor reached"
 STALLED = "stall stop"
 TRAVEL_LIMIT = "travel limit reached"
+# A crawl turned its most without its end sensor going active (re_seat).
+CRAWL_LIMIT = "crawl limit reached"
 TIMED_OUT = "timeout"
 START_FAILED = "failed to start"
 STOP_FAILED = "failed to stop"
