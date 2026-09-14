@@ -1,6 +1,5 @@
 from end_sensors import UP as UP_SENSOR, DOWN as DOWN_SENSOR
 from packet import Address
-from revolutions import RevolutionCounter
 from servo_health import MoveFigures
 from tilt import read_at_boot
 import servo_health
@@ -8,6 +7,7 @@ import cover_state
 import persist
 import servo_wait
 import stall
+import travel
 from time import monotonic_ns, sleep
 import microcontroller
 import asyncio
@@ -234,19 +234,18 @@ async def watch_end_sensor(end_sensors, sensor, finish_event, callback):
         await asyncio.sleep(0)
     print(f"Completed watching end sensor {sensor}.")
 
-async def count_revolutions(servo, finish_event, counting_up, callback, on_stall):
-    """Sample the lift's servo angle and speed every lift_sample_ms, count
-    its revolutions, and stop the lift at once if it stalls, then call
-    on_stall."""
+async def track_travel(servo, finish_event, tracker, on_sample, on_stall):
+    """Sample the lift's servo angle and speed every lift_sample_ms, feed the
+    angle to the travel tracker, then call on_sample. Stop the lift at once
+    if it stalls, then call on_stall."""
     sample_s = os.getenv("lift_sample_ms", 50) / 1000
-    counter = RevolutionCounter(counting_up)
     detector = stall.StallDetector(
         window_ms=os.getenv("stall_window_ms", stall.WINDOW_MS),
         max_speed=os.getenv("stall_max_speed", stall.MAX_SPEED),
         max_angle_change=os.getenv("stall_max_angle_change", stall.MAX_ANGLE_CHANGE),
         grace_ms=os.getenv("stall_grace_ms", stall.GRACE_MS),
         dead_zone_window_ms=os.getenv("stall_dead_zone_window_ms", stall.DEAD_ZONE_WINDOW_MS))
-    print(f"Counting revolutions for servo {servo.id}...")
+    print(f"Tracking travel for servo {servo.id}...")
     while True:
         # monotonic() loses precision within hours of uptime; monotonic_ns() doesn't.
         started = monotonic_ns()
@@ -263,13 +262,13 @@ async def count_revolutions(servo, finish_event, counting_up, callback, on_stall
                 print(f"STALL: the lift's servo angle was frozen at {detector.frozen_angle} for {detector.frozen_ms} ms.")
                 on_stall()
                 break
-            if counter.feed(angle):
-                callback(counter.count)
+            tracker.feed(angle)
+            on_sample()
         if finish_event.is_set():
             break
 
         await asyncio.sleep(max(0, sample_s - (monotonic_ns() - started) / 1e9))
-    print(f"Completed counting revolutions for servo {servo.id}.")
+    print(f"Completed tracking travel for servo {servo.id}.")
 
 async def wait(timeout, on_timeout):
     print(f"Waiting for {timeout} seconds...")
@@ -305,13 +304,19 @@ class Blinds:
             # sensors and the record in NVM. The record keeps an interrupted
             # move's direction.
             self._store = persist.Store(microcontroller.nvm)
-            self._position = cover_state.at_boot(end_sensors.active(UP_SENSOR),
-                                                 end_sensors.active(DOWN_SENSOR),
-                                                 self._store.state)
+            up_active = end_sensors.active(UP_SENSOR)
+            down_active = end_sensors.active(DOWN_SENSOR)
+            self._position = cover_state.at_boot(up_active, down_active, self._store.state)
             print(f"Cover state at boot: {self._position}, stored {self._store.state}.")
+            # So does the travel, which an active end sensor re-anchors. Until
+            # the full travel is learned, the window height over the
+            # spindle's circumference stands in for it.
             h = os.getenv("window_height", 1800.0)
             d = os.getenv("spindle_diameter", 20.0)
-            self._max_revolutions = int( h / (d * 3.14159)) # ToDo: add settings
+            self._tracker = travel.at_boot(up_active, down_active, self._store.state,
+                                           self._store.travel, self._store.full_travel,
+                                           h / (d * math.pi))
+            print(f"Travel at boot: {self._tracker.travel}, full travel {self._tracker.full_travel}.")
             self._tilt_scale = tilt_scale
             # code.py builds the blind after the boot re-init has stopped
             # the servos, and before the first connect publishes the tilt.
@@ -442,32 +447,44 @@ class Blinds:
             self._position = value
 
         def _save_state(self, state):
-            """Store a cover state in NVM, while the lift servo is stopped.
-            Unknown follows a stop that wasn't confirmed, when the lift may
-            be driving, so it isn't stored. Travel stays unknown until it's
-            tracked (#50)."""
+            """Store a cover state in NVM, with the travel and full travel,
+            while the lift servo is stopped. Unknown follows a stop that
+            wasn't confirmed, when the lift may be driving, so it isn't
+            stored. An opening or closing stores the travel as unknown,
+            which it stays if the move is interrupted."""
             if state == Blinds.POSITION_UNKNOWN:
                 return
+            moving = state in (Blinds.POSITION_MOVING_UP, Blinds.POSITION_MOVING_DOWN)
             try:
-                self._store.save(state, persist.NAN)
+                self._store.save(state, persist.NAN if moving else self._tracker.travel,
+                                 self._tracker.full_travel)
             except Exception as e:
                 print(f"Failed to store the cover state: {e!r}")
 
-        async def operate(self, end, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
+        async def operate(self, end, speed, slow_speed, approach_revs, timeout, from_end):
             """Drive the lift until its end sensor, and stop it. Returns how
             the move ended, one of cover_state's results: the first way to
             come, or STOP_FAILED if the lift's stop wasn't confirmed.
 
+            It drives at speed, then at slow_speed, the approach speed,
+            within approach_revs of the end by travel, or all the way with
+            the travel unknown. It stops once the travel is
+            travel_margin_revs past the end. from_end is whether the blind
+            starts at rest at the other end: reaching the end sensor then
+            learns the full travel.
+
             It stores the opening or closing just before the lift starts, so
             a reset mid-move boots as an interrupted move, and the state the
-            move leaves toward end, UP or DOWN, after the confirmed stop. A
-            move whose lift never started, as its tilt didn't arrive, leaves
-            the stored state as it was: the blind hasn't moved."""
+            move leaves toward end, UP or DOWN, with the travel, after the
+            confirmed stop. A move whose lift never started, as its tilt
+            didn't arrive, leaves the stored state as it was: the blind
+            hasn't moved."""
             # The end sensor toward end is watched from here on: a press that
             # comes later, even before the lift starts, ends the move.
             sensor = UP_SENSOR if end == Blinds.POSITION_UP else DOWN_SENSOR
             if self._end_sensors.watch(sensor):
                 print("Already at stopped state.")
+                self._tracker.anchor(end)
                 self._save_state(end)
                 return cover_state.REACHED
             finish_event = asyncio.Event()
@@ -484,15 +501,27 @@ class Blinds:
                 print("End sensor reached, stopping...")
                 finish(cover_state.REACHED)
 
-            revs = max_revs
-            fast_revs = revs - slow_revs
-            def handle_count(count):
-                print(f"Revolution count = {count}")
-                if count >= revs:
-                    print("Max count reached, stopping...")
+            tracker = self._tracker
+            tracker.begin(end == Blinds.POSITION_UP, from_end)
+            # settings.toml takes no floats, so a fractional value must be quoted.
+            margin = float(os.getenv("travel_margin_revs", 2))
+            if tracker.approach_due(approach_revs):
+                speed = slow_speed
+            if math.isnan(tracker.travel):
+                # All the way at approach speed takes longer.
+                timeout = os.getenv("approach_timeout", 120)
+            print(f"Travel {tracker.travel} of {tracker.full_or_estimate} revolutions, driving at {speed}.")
+            slowed = speed == slow_speed
+            lift_started = False
+
+            def handle_sample():
+                nonlocal slowed
+                if tracker.beyond_limit(margin):
+                    print(f"Travel {tracker.travel} is past its bound, stopping...")
                     finish(cover_state.TRAVEL_LIMIT)
-                elif count == fast_revs:
-                    print("Slowing down...")
+                elif lift_started and not slowed and tracker.approach_due(approach_revs):
+                    slowed = True
+                    print(f"Slowing down at travel {tracker.travel}...")
                     try:
                         self._lift_servo.speed = slow_speed
                     except ServoCommFailure as e:
@@ -500,7 +529,6 @@ class Blinds:
 
             tasks = []
             wait_task = None
-            lift_started = False
             try:
                 tasks.append(asyncio.create_task(
                     watch_end_sensor(self._end_sensors,
@@ -509,11 +537,11 @@ class Blinds:
                                      sensor_reached)))
 
                 tasks.append(asyncio.create_task(
-                    count_revolutions(self._lift_servo,
-                                        finish_event,
-                                        counting_up,
-                                        handle_count,
-                                        lambda: finish(cover_state.STALLED))))
+                    track_travel(self._lift_servo,
+                                 finish_event,
+                                 tracker,
+                                 handle_sample,
+                                 lambda: finish(cover_state.STALLED))))
 
                 wait_task = asyncio.create_task(
                     wait(timeout, lambda: finish(cover_state.TIMED_OUT)))
@@ -553,10 +581,27 @@ class Blinds:
                 stopped = False
             if not stopped:
                 print("Failed to stop the lift servo.")
+                self._tracker.lose()
                 return cover_state.STOP_FAILED
             if lift_started:
+                self._feed_rest_angle()
+                if result == cover_state.REACHED:
+                    tracker.reached()
+                print(f"Travel {tracker.travel}, full travel {tracker.full_travel}.")
                 self._save_state(cover_state.after_move(result, end))
             return result
+
+        def _feed_rest_angle(self):
+            """Feed the travel tracker the lift's servo angle once it has
+            stopped, as it coasts a little past the last sample. The travel
+            then ends, and re-anchors, where the lift rests."""
+            try:
+                sample = self._lift_servo.angle_and_speed
+            except Exception as e:
+                print(f"Failed to read the lift's servo angle at rest: {e!r}")
+                return
+            if sample is not None:
+                self._tracker.feed(sample[0])
 
         async def close(self):
             await self._as_move(self._close())
@@ -564,15 +609,15 @@ class Blinds:
         async def _close(self):
             print("Closing blinds...")
             self._cancel_tilt_move()
+            from_end = self._position == Blinds.POSITION_UP
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
             result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward, whose end sensor stops it
                                 self._speed,                              # Drive in negative direction
-                                self._max_revolutions,                      # Stop when max reached
                                 os.getenv("close_approach_speed", 300),    # Approach speed
-                                os.getenv("close_approach_revs", 10),       # Approach revolutions
-                                False,                                      # The servo angle counts down while closing
-                                os.getenv("close_timeout", 45))                                         # Timeout
+                                os.getenv("close_approach_revs", 10),       # Approach within this many revolutions of the end
+                                os.getenv("close_timeout", 45),            # Timeout, with the travel known
+                                from_end)                                   # Whether it starts at the other end
             # A close that didn't reach the end sensor gives up here. A tilt
             # that doesn't arrive at the end is a timeout, like any other.
             if result == cover_state.REACHED and not await self.drive_tilt(self._tilt):
@@ -587,15 +632,15 @@ class Blinds:
         async def _open(self):
             print("Opening blinds...")
             self._cancel_tilt_move()
+            from_end = self._position == Blinds.POSITION_DOWN
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()
             result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward, whose end sensor stops it
                                 -self._speed,                               # Drive in positive direction
-                                self._max_revolutions,                      # Stop when max reached
                                 -os.getenv("open_approach_speed", 300),      # Approach speed
-                                os.getenv("open_approach_revs", 7),         # Approach revolutions
-                                True,                                       # The servo angle counts up while opening
-                                os.getenv("open_timeout", 45))              # Timeout
+                                os.getenv("open_approach_revs", 7),         # Approach within this many revolutions of the end
+                                os.getenv("open_timeout", 45),              # Timeout, with the travel known
+                                from_end)                                   # Whether it starts at the other end
             self._position = cover_state.after_move(result, Blinds.POSITION_UP)
             self.report_state()
             # Only an open that reached the end sensor counts.
@@ -613,6 +658,8 @@ class Blinds:
                 stopped = False
             # Unknown if the stop wasn't confirmed: the lift may be driving.
             self._position = Blinds.POSITION_STOPPED if stopped else Blinds.POSITION_UNKNOWN
+            if not stopped:
+                self._tracker.lose()
             self._save_state(self._position)
             self.report_state()
             print("Blinds stopped.")

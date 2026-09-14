@@ -65,10 +65,10 @@ class Store:
         self._data = bytes(nvm[0:SIZE])
         self.state, self.travel, self.full_travel = decode(self._data)
 
-    def save(self, state, travel):
-        """Store a cover state and travel, keeping the full travel."""
-        data = encode(state, travel, self.full_travel)
+    def save(self, state, travel, full_travel):
+        """Store a cover state, travel and full travel."""
+        data = encode(state, travel, full_travel)
         if data != self._data:
             self._nvm[0:SIZE] = data
             self._data = data
-        self.state, self.travel = state, travel
+        self.state, self.travel, self.full_travel = state, travel, full_travel
