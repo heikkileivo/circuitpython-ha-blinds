@@ -468,7 +468,7 @@ class Blinds:
             except Exception as e:
                 print(f"Failed to store the cover state: {e!r}")
 
-        async def operate(self, end, speed, approach_revs, timeout, from_end):
+        async def operate(self, end, speed, approach_revs, timeout, state):
             """Drive the lift until its end sensor, and stop it. Returns how
             the move ended, one of cover_state's results: the first way to
             come, or STOP_FAILED if the lift's stop wasn't confirmed. Every
@@ -487,9 +487,9 @@ class Blinds:
             The move proper drives at speed, then at the approach speed
             within approach_revs of the end by travel, or all the way with
             the travel unknown. Every drive stops once the travel is
-            travel_margin_revs past the end. from_end is whether the blind
-            starts at rest at the other end: the move proper reaching the end
-            sensor then learns the full travel.
+            travel_margin_revs past the end. state is the cover state the
+            move starts from: from the other end, the move proper reaching
+            the end sensor learns the full travel.
 
             It stores the opening or closing just before the lift first
             starts, so a reset mid-move boots as an interrupted move, and the
@@ -500,11 +500,14 @@ class Blinds:
             sensor went active meanwhile, which stores that end, as when it's
             active from the start."""
             sensor = UP_SENSOR if end == Blinds.POSITION_UP else DOWN_SENSOR
+            other_end = Blinds.POSITION_DOWN if end == Blinds.POSITION_UP else Blinds.POSITION_UP
+            from_end = state == other_end
             tracker = self._tracker
-            # Planned from the cover state stored before this move, which
-            # keeps an interrupted move's direction. settings.toml takes no
-            # floats, so a fractional value must be quoted.
-            plan = re_seat.Plan(end, self._store.state, tracker.travel, tracker.full_or_estimate,
+            # Planned from the cover state the move starts from, and the one
+            # stored, which after an interrupted move keeps its direction.
+            # settings.toml takes no floats, so a fractional value must be
+            # quoted.
+            plan = re_seat.Plan(end, state, self._store.state, tracker.travel, tracker.full_or_estimate,
                                 float(os.getenv("crawl_down_revs", re_seat.CRAWL_DOWN_REVS)),
                                 float(os.getenv("re_seat_revs", re_seat.RE_SEAT_REVS)))
             drive = plan.next(self._end_sensors.active(sensor))
@@ -514,19 +517,19 @@ class Blinds:
                 self._save_state(end)
                 return cover_state.REACHED
             # The first drive turns the slats to 50 before the lift moves.
-            before_lift = lambda: self.drive_tilt(50)
-            lift_started = False
+            tilt_first = True
+            any_started = False
             while drive is not None:
                 print(f"Drive: {drive}.")
                 result, started = await self._drive(drive, sensor, speed, approach_revs,
-                                                    timeout, from_end, before_lift)
+                                                    timeout, from_end, tilt_first)
                 if result == cover_state.STOP_FAILED:
                     print("Failed to stop the lift servo.")
                     return result
-                before_lift = None
-                lift_started = lift_started or started
+                tilt_first = False
+                any_started = any_started or started
                 if result == cover_state.REACHED:
-                    if started and drive.kind == re_seat.MOVE:
+                    if started and not drive.crawls:
                         tracker.reached()
                     else:
                         # A crawl, or an end sensor that went active before
@@ -534,13 +537,13 @@ class Blinds:
                         tracker.anchor(end)
                 drive = plan.next(self._end_sensors.active(sensor), result)
             result = plan.result
-            if not lift_started and result != cover_state.REACHED:
+            if not any_started and result != cover_state.REACHED:
                 return result
             print(f"Travel {tracker.travel}, full travel {tracker.full_travel}.")
             self._save_state(cover_state.after_move(result, end))
             return result
 
-        async def _drive(self, drive, sensor, speed, approach_revs, timeout, from_end, before_lift):
+        async def _drive(self, drive, sensor, speed, approach_revs, timeout, from_end, tilt_first):
             """One drive of a move, as re_seat plans it: drive the lift until
             the end sensor sensor goes active, and stop it. Returns how it
             ended, one of cover_state's results, and whether the lift
@@ -548,12 +551,14 @@ class Blinds:
             with the lift's stop sequence.
 
             The move proper drives at speed, then at the approach speed
-            within approach_revs of the end, or times out after timeout s. A
-            crawl drives at the approach speed, and stops once it has turned
-            drive.revs, or after crawl_timeout s. Every drive stops at the
-            travel limit, and at a stall. before_lift, if not None, runs
-            before the lift starts, with the end sensor watched: the first
-            drive's tilt, which returns whether it arrived."""
+            within approach_revs of the end, and gives up after timeout s. A
+            crawl drives at the approach speed all the way. The crawl down
+            and the re-seat stop once they have turned drive.revs, and give
+            up after crawl_timeout s. The crawl up, like the move proper with
+            the travel unknown, gives up after approach_timeout s. Every
+            drive stops at the travel limit, and at a stall. tilt_first is
+            whether to turn the slats to 50 before the lift starts, with the
+            end sensor watched, as the first drive does."""
             finish_event = asyncio.Event()
             result = None
 
@@ -595,15 +600,15 @@ class Blinds:
                 # one active already, and the lift doesn't start.
                 if self._end_sensors.watch(sensor):
                     finish(cover_state.REACHED)
-                tracker.begin(drive.up, from_end and drive.kind == re_seat.MOVE)
+                tracker.begin(drive.up, from_end and not drive.crawls)
                 # settings.toml takes no floats, so a fractional value must be quoted.
                 margin = float(os.getenv("travel_margin_revs", 2))
                 slow_speed = self._approach_speed(drive.up)
-                if drive.kind != re_seat.MOVE or tracker.approach_due(approach_revs):
+                if drive.crawls or tracker.approach_due(approach_revs):
                     speed = slow_speed
                 if drive.revs is not None:
                     timeout = os.getenv("crawl_timeout", 15)
-                elif math.isnan(tracker.travel):
+                elif drive.crawls or math.isnan(tracker.travel):
                     # All the way at approach speed takes longer.
                     timeout = os.getenv("approach_timeout", 120)
                 print(f"Travel {tracker.travel} of {tracker.full_or_estimate} revolutions, driving at {speed}.")
@@ -625,7 +630,7 @@ class Blinds:
                 wait_task = asyncio.create_task(
                     wait(timeout, lambda: finish(cover_state.TIMED_OUT)))
 
-                if before_lift is not None and not await before_lift():
+                if tilt_first and not await self.drive_tilt(50):
                     finish(cover_state.TIMED_OUT)
                 elif finish_event.is_set():
                     # It ended during the tilt, at the travel limit or with
@@ -713,14 +718,14 @@ class Blinds:
         async def _close(self):
             print("Closing blinds...")
             self._cancel_tilt_move()
-            from_end = self._position == Blinds.POSITION_UP
+            state = self._position
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
             result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward, whose end sensor stops it
                                 self._speed,                              # Drive in negative direction
                                 os.getenv("close_approach_revs", 10),       # Approach within this many revolutions of the end
                                 os.getenv("close_timeout", 45),            # Timeout, with the travel known
-                                from_end)                                   # Whether it starts at the other end
+                                state)                                   # The cover state it starts from
             # A close that didn't reach the end sensor gives up here. A tilt
             # that doesn't arrive at the end is a timeout, like any other.
             if result == cover_state.REACHED and not await self.drive_tilt(self._tilt):
@@ -735,14 +740,14 @@ class Blinds:
         async def _open(self):
             print("Opening blinds...")
             self._cancel_tilt_move()
-            from_end = self._position == Blinds.POSITION_DOWN
+            state = self._position
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()
             result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward, whose end sensor stops it
                                 -self._speed,                               # Drive in positive direction
                                 os.getenv("open_approach_revs", 7),         # Approach within this many revolutions of the end
                                 os.getenv("open_timeout", 45),              # Timeout, with the travel known
-                                from_end)                                   # Whether it starts at the other end
+                                state)                                   # The cover state it starts from
             self._position = cover_state.after_move(result, Blinds.POSITION_UP)
             self.report_state()
             # Only an open that reached the end sensor counts.
