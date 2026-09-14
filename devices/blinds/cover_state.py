@@ -9,6 +9,9 @@ UP = 2              # open
 MOVING_UP = 3       # opening
 MOVING_DOWN = 4     # closing
 
+# The cover states a blind rests in once a move has ended.
+SETTLED = (UP, DOWN, STOPPED)
+
 # How an open or close ended: Blinds.operate()'s result.
 REACHED = "end sensor reached"
 STALLED = "stall stop"
@@ -43,6 +46,6 @@ def at_boot(up_active, down_active, stored):
         return UP
     if down_active:
         return DOWN
-    if stored in (UP, DOWN, STOPPED):
+    if stored in SETTLED:
         return stored
     return UNKNOWN

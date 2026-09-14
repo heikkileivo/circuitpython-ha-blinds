@@ -6,6 +6,7 @@ And its full travel, learned from a run from one end sensor to the other
 import math
 
 import cover_state
+from persist import NAN
 
 # A turn of the lift at the servo angle's own rate, in counts: the time from
 # one wrap to the next, at the angle's rate mid-turn. Middle's lift measured
@@ -27,9 +28,6 @@ BACK_TOLERANCE = 16
 _LOW = 0
 _HIGH = 1
 
-# An unknown travel, and a full travel not learned yet.
-NAN = float("nan")
-
 # A learned full travel replaces the one in use only if it differs by more
 # than this, in revolutions (#13).
 LEARN_TOLERANCE = 0.1
@@ -46,13 +44,13 @@ class WrapCounter:
     change within the turn."""
 
     def __init__(self, counting_up):
-        self._turn = 1 if counting_up else -1
+        self._direction = 1 if counting_up else -1
         # Opening, the angle counts up, so it wraps from high to low.
         self._wrap_from, self._wrap_to = (_HIGH, _LOW) if counting_up else (_LOW, _HIGH)
         self._zone = None           # The last angle's third, mid-turn aside
         self._angle = None          # The last angle taken
+        self._start_angle = None    # The first angle taken
         self._turns = 0
-        self._first = None
         self.revs = 0.0
 
     def feed(self, angle):
@@ -66,16 +64,16 @@ class WrapCounter:
         if self._zone == self._wrap_from:
             if zone is None:
                 return
-            if zone == self._wrap_from and (self._angle - angle) * self._turn > BACK_TOLERANCE:
+            if zone == self._wrap_from and (self._angle - angle) * self._direction > BACK_TOLERANCE:
                 return
-        if self._first is None:
-            self._first = angle
+        if self._start_angle is None:
+            self._start_angle = angle
         if self._zone == self._wrap_from and zone == self._wrap_to:
-            self._turns += self._turn
+            self._turns += self._direction
         if zone is not None:
             self._zone = zone
         self._angle = angle
-        self.revs = self._turns + (angle - self._first) / COUNTS_PER_TURN
+        self.revs = self._turns + (angle - self._start_angle) / COUNTS_PER_TURN
 
 
 class Tracker:
@@ -94,7 +92,13 @@ class Tracker:
 
     @property
     def full_or_estimate(self):
+        """The full travel, or the estimate until it's learned."""
         return self._estimate if math.isnan(self.full_travel) else self.full_travel
+
+    @property
+    def moved(self):
+        """The revolutions the move has turned, up positive."""
+        return self._counter.revs
 
     def begin(self, opening, from_end):
         """Start a move, opening or closing. from_end is whether the blind
@@ -129,14 +133,14 @@ class Tracker:
         unknown, whether the move itself has turned full travel plus margin,
         more than any move needs."""
         if math.isnan(self.travel):
-            return abs(self._counter.revs) > self.full_or_estimate + margin
+            return abs(self.moved) > self.full_or_estimate + margin
         return self.remaining < -margin
 
     def reached(self):
         """The move reached its end sensor. One that started at the other end
         learns the full travel; then the travel re-anchors at this end."""
         if self._from_end:
-            self._learn(abs(self._counter.revs))
+            self._learn(abs(self.moved))
         self.anchor(cover_state.UP if self._opening else cover_state.DOWN)
 
     def anchor(self, end):
@@ -153,10 +157,8 @@ class Tracker:
 
     def _learn(self, run):
         if not LEARN_MIN * self._estimate <= run <= LEARN_MAX * self._estimate:
-            print(f"Not learning a full travel of {run} revolutions, too far from the estimate {self._estimate}.")
             return
         if math.isnan(self.full_travel) or abs(run - self.full_travel) > LEARN_TOLERANCE:
-            print(f"Learned full travel: {run} revolutions, was {self.full_travel}.")
             self.full_travel = run
 
 
@@ -166,7 +168,7 @@ def at_boot(up_active, down_active, stored_state, stored_travel, full_travel, es
     closed or stopped, but not after an interrupted move or with a blank
     record. An active end sensor re-anchors it. Both active can't be, so
     neither is trusted, nor the stored travel."""
-    settled = stored_state in (cover_state.UP, cover_state.DOWN, cover_state.STOPPED)
+    settled = stored_state in cover_state.SETTLED
     tracker = Tracker(stored_travel if settled else NAN, full_travel, estimate)
     if up_active and down_active:
         tracker.lose()

@@ -477,8 +477,10 @@ class Blinds:
             a reset mid-move boots as an interrupted move, and the state the
             move leaves toward end, UP or DOWN, with the travel, after the
             confirmed stop. A move whose lift never started, as its tilt
-            didn't arrive, leaves the stored state as it was: the blind
-            hasn't moved."""
+            didn't arrive or the move ended meanwhile, leaves the stored
+            state as it was: the blind hasn't moved. Unless its end sensor
+            went active meanwhile, which stores that end, as when it's
+            active from the start."""
             # The end sensor toward end is watched from here on: a press that
             # comes later, even before the lift starts, ends the move.
             sensor = UP_SENSOR if end == Blinds.POSITION_UP else DOWN_SENSOR
@@ -548,6 +550,10 @@ class Blinds:
 
                 if not await self.drive_tilt(50):
                     finish(cover_state.TIMED_OUT)
+                elif finish_event.is_set():
+                    # It ended during the tilt, at the travel limit or with
+                    # its end sensor active, so the lift doesn't start.
+                    print("The move ended before the lift started.")
                 else:
                     self._save_state(self._position)
                     lift_started = True
@@ -587,8 +593,14 @@ class Blinds:
                 self._feed_rest_angle()
                 if result == cover_state.REACHED:
                     tracker.reached()
-                print(f"Travel {tracker.travel}, full travel {tracker.full_travel}.")
-                self._save_state(cover_state.after_move(result, end))
+            elif result == cover_state.REACHED:
+                # The end sensor went active before the lift started: the
+                # blind was at the end already.
+                tracker.anchor(end)
+            else:
+                return result
+            print(f"Moved {tracker.moved} revolutions: travel {tracker.travel}, full travel {tracker.full_travel}.")
+            self._save_state(cover_state.after_move(result, end))
             return result
 
         def _feed_rest_angle(self):

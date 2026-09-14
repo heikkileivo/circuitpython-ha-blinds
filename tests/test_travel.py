@@ -14,7 +14,8 @@ import unittest
 
 import cover_state
 import travel
-from travel import COUNTS_PER_TURN, NAN, Tracker, WrapCounter
+from persist import NAN
+from travel import COUNTS_PER_TURN, HIGH_START, LOW_END, Tracker, WrapCounter
 
 from .lift_samples import MEASURED_EVERY_MS, as_sampled, measured_phases
 
@@ -118,8 +119,8 @@ class WrapCounterTest(unittest.TestCase):
                         revs(duty < 0, angles),
                         MEASURED_TURNS[name] + (angles[-1] - angles[0]) / COUNTS_PER_TURN)
 
-    def test_a_measured_stray_never_moves_the_count_half_a_turn(self):
-        # A miscounted wrap would move it a whole turn.
+    def test_a_measured_stray_never_moves_the_revs_half_a_turn(self):
+        # A miscounted wrap would move them a whole turn.
         for name, (duty, samples) in measured_phases().items():
             for offset in range(0, SAMPLE_MS, MEASURED_EVERY_MS):
                 with self.subTest(phase=name, offset=offset):
@@ -138,7 +139,8 @@ class WrapCounterTest(unittest.TestCase):
             with self.subTest(phase=name):
                 up = duty < 0
                 wraps = [t for (_, a0, _), (t, a, _) in zip(samples, samples[1:])
-                         if ((a0 >= 683 and a < 341) if up else (a0 < 341 and a >= 683))]
+                         if ((a0 >= HIGH_START and a < LOW_END) if up
+                             else (a0 < LOW_END and a >= HIGH_START))]
                 if len(wraps) < 2:
                     continue
                 mid = [(t, a) for t, a, _ in samples
