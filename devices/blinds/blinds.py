@@ -1,6 +1,9 @@
 from packet import Address
 from revolutions import RevolutionCounter
 from servo_health import MoveFigures
+import servo_health
+import cover_state
+import servo_wait
 import stall
 from time import monotonic_ns, sleep
 import microcontroller
@@ -8,8 +11,15 @@ import asyncio, digitalio
 import math
 import os
 
-class ServoException(BaseException):
+def now_ms():
+    """The time in ms for the servo waits. monotonic() loses precision within
+    hours of uptime; monotonic_ns() doesn't."""
+    return monotonic_ns() // 1_000_000
+
+# An Exception, so the except Exception handlers catch it.
+class ServoException(Exception):
     def __init__(self, message):
+        super().__init__(message)
         self._message = message
 
     @property
@@ -148,11 +158,11 @@ class Servo:
 
     @property
     def is_moving(self):
-        """Whether the servo is moving, False if it didn't reply. The same
+        """Whether the servo is moving, or None if it didn't reply. The same
         read feeds the load and supply voltage to the move's figures."""
         sample = self._reader.read_moving(self._id)
         if sample is None:
-            return False
+            return None
         load, voltage, moving = sample
         self.move.feed(voltage, load)
         return moving
@@ -166,6 +176,8 @@ class Servo:
         return (value, diff)
 
     async def start(self, speed):
+        """Command the duty, and wait for the servo to start moving, at most
+        lift_start_deadline_ms. Returns whether it started."""
         print(f"Starting servo...")
         try:
             self.speed = speed
@@ -173,22 +185,37 @@ class Servo:
             print(f"Starting servo failed: {e}")
             return False
 
-        while self.is_moving == False:
-            await asyncio.sleep(0)
+        deadline_ms = os.getenv("lift_start_deadline_ms", servo_wait.START_DEADLINE_MS)
+        if not await servo_wait.until_moving(lambda: self.is_moving, now_ms, deadline_ms):
+            print(f"Servo {self._id} didn't start moving within {deadline_ms} ms.")
+            return False
         print(f"Servo started moving.")
         return True
 
     async def stop(self):
+        """Stop the servo: duty 0, then torque off once it has stopped
+        moving, or once lift_stop_deadline_ms has passed. Returns whether
+        the stop is confirmed: duty 0 and torque off both read back."""
         print(f"Stopping servo...")
-        try:
-            self.speed = 0
-        except ServoCommFailure as e:
-            print(f"Stopping servo failed: {e}")
-            return False
-        while self.is_moving:
-            await asyncio.sleep(0)
-        print(f"Servo stopped moving.")
-        return True
+        duty_0 = self._write_duty_0()
+        deadline_ms = os.getenv("lift_stop_deadline_ms", servo_wait.STOP_DEADLINE_MS)
+        if not await servo_wait.until_still(lambda: self.is_moving, now_ms, deadline_ms):
+            print(f"Servo {self._id} didn't stop moving within {deadline_ms} ms.")
+            # It may have missed the first duty 0.
+            duty_0 = self._write_duty_0()
+        limp = self.torque_off()
+        print(f"Servo {self._id} stopped: duty 0 confirmed {duty_0}, torque off confirmed {limp}.")
+        return duty_0 and limp
+
+    def _write_duty_0(self):
+        """Write duty 0, and read it back. Returns whether it's confirmed."""
+        self._duty = 0
+        return servo_health.write_duty_0(self._reader, self._id)
+
+    def torque_off(self):
+        """Turn the torque off, and read it back. Returns whether it's
+        confirmed off."""
+        return servo_health.torque_off(self._reader, self._id)
 
     def __repr__(self):
         return f"Motor {self._id}: Pos: {self._pos} V: {self._v} I: {self._i} L: {self._l} U: {self._u} T: {self._t}"
@@ -217,9 +244,10 @@ async def poll_pin(pin, finish_event, callback):
             await asyncio.sleep(0)
     print(f"Completed polling for pin {pin}.")
 
-async def count_revolutions(servo, finish_event, counting_up, callback):
+async def count_revolutions(servo, finish_event, counting_up, callback, on_stall):
     """Sample the lift's servo angle and speed every lift_sample_ms, count
-    its revolutions, and stop the lift at once if it stalls."""
+    its revolutions, and stop the lift at once if it stalls, then call
+    on_stall."""
     sample_s = os.getenv("lift_sample_ms", 50) / 1000
     counter = RevolutionCounter(counting_up)
     detector = stall.StallDetector(
@@ -243,7 +271,7 @@ async def count_revolutions(servo, finish_event, counting_up, callback):
                 except ServoCommFailure as e:
                     print(f"Failed to stop the stalled lift: {e}")
                 print(f"STALL: the lift's servo angle was frozen at {detector.frozen_angle} for {detector.frozen_ms} ms.")
-                finish_event.set()
+                on_stall()
                 break
             if counter.feed(angle):
                 callback(counter.count)
@@ -253,12 +281,12 @@ async def count_revolutions(servo, finish_event, counting_up, callback):
         await asyncio.sleep(max(0, sample_s - (monotonic_ns() - started) / 1e9))
     print(f"Completed counting revolutions for servo {servo.id}.")
 
-async def wait(finish_event, timeout):
+async def wait(timeout, on_timeout):
     print(f"Waiting for {timeout} seconds...")
     try:
         await asyncio.sleep(timeout)
         print("Timeout reached.")
-        finish_event.set()
+        on_timeout()
     except asyncio.CancelledError:
         print("Waiting was cancelled.")
     print("Completed waiting.")
@@ -267,12 +295,12 @@ async def wait(finish_event, timeout):
 
 
 class Blinds:
-        POSITION_UNKNOWN = -1
-        POSITION_STOPPED = 0
-        POSITION_DOWN = 1
-        POSITION_UP = 2
-        POSITION_MOVING_UP = 3
-        POSITION_MOVING_DOWN = 4
+        POSITION_UNKNOWN = cover_state.UNKNOWN
+        POSITION_STOPPED = cover_state.STOPPED
+        POSITION_DOWN = cover_state.DOWN
+        POSITION_UP = cover_state.UP
+        POSITION_MOVING_UP = cover_state.MOVING_UP
+        POSITION_MOVING_DOWN = cover_state.MOVING_DOWN
 
         def __init__(self, reader, update_callback, on_opened, on_moved, up_pin, down_pin, tilt_scale):
             self._position = Blinds.POSITION_DOWN
@@ -294,6 +322,7 @@ class Blinds:
             self._servo_position = 0
             self._revolutions = 0
             self._opened = 0
+            self._tilt_move = None      # The tilt-only move's task, if one ran
 
 
         @property
@@ -305,7 +334,24 @@ class Blinds:
             self._tilt = value
             if self._position == Blinds.POSITION_DOWN:
                 # A tilt-only move.
-                asyncio.create_task(self._as_move(self.drive_tilt(self._tilt)))
+                self._cancel_tilt_move()
+                self._tilt_move = asyncio.create_task(self._as_move(self._tilt_only(self._tilt)))
+
+        async def _tilt_only(self, value):
+            """A tilt-only move to value. A tilt that doesn't arrive leaves
+            the cover state stopped, as after any timeout."""
+            if not await self.drive_tilt(value):
+                self._position = Blinds.POSITION_STOPPED
+                self.report_state()
+
+        def _cancel_tilt_move(self):
+            """Cancel a tilt-only move still under way, before a later drive
+            of the tilt servo: the latest command wins. Left to run, the
+            earlier move would turn the torque off under the later drive. It
+            is cancelled in its wait, so it never does."""
+            if self._tilt_move is not None:
+                self._tilt_move.cancel()
+                self._tilt_move = None
 
         async def _as_move(self, drive):
             """Await a coroutine that drives the servos, as one move. When
@@ -322,12 +368,22 @@ class Blinds:
             return self._opened
 
         async def drive_tilt(self, value):
+            """Drive the tilt servo to value, and turn its torque off once it
+            has arrived, or once tilt_deadline_ms has passed. Returns whether
+            it arrived."""
             print(f"Driving tilt servo to {value}...")
-            self._tilt_servo.enable_torque = True
-            self._tilt_servo.position = value
-            while self._tilt_servo.is_moving:
-                await asyncio.sleep(0)
-            self._tilt_servo.enable_torque = False
+            servo = self._tilt_servo
+            servo.enable_torque = True
+            servo.position = value
+            deadline_ms = os.getenv("tilt_deadline_ms", servo_wait.TILT_DEADLINE_MS)
+            arrived = await servo_wait.until_still(
+                lambda: servo.is_moving, now_ms, deadline_ms,
+                os.getenv("tilt_rise_ms", servo_wait.TILT_RISE_MS))
+            if not arrived:
+                print(f"The tilt servo didn't arrive at {value} within {deadline_ms} ms.")
+            if not servo.torque_off():
+                print("Failed to turn the tilt servo's torque off.")
+            return arrived
 
         async def report_state(self):
             pass
@@ -384,14 +440,25 @@ class Blinds:
             self._position = value
 
         async def operate(self, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
+            """Drive the lift until its end sensor, and stop it. Returns how
+            the move ended, one of cover_state's results: the first way to
+            come, or STOP_FAILED if the lift's stop wasn't confirmed."""
             if get_pin_value(stop_pin):
                 print("Already at stopped state.")
-                return
+                return cover_state.REACHED
             finish_event = asyncio.Event()
+            result = None
+
+            def finish(how):
+                nonlocal result
+                if result is None:
+                    print(f"Move ended: {how}.")
+                    result = how
+                finish_event.set()
 
             def pin_reached():
                 print("Stop pin reached, stopping...")
-                finish_event.set()
+                finish(cover_state.REACHED)
 
             revs = max_revs
             fast_revs = revs - slow_revs
@@ -399,7 +466,7 @@ class Blinds:
                 print(f"Revolution count = {count}")
                 if count >= revs:
                     print("Max count reached, stopping...")
-                    finish_event.set()
+                    finish(cover_state.TRAVEL_LIMIT)
                 elif count == fast_revs:
                     print("Slowing down...")
                     try:
@@ -422,8 +489,9 @@ class Blinds:
 
                 revs = max_revs # Reset revolution counter
 
+            tasks = []
+            wait_task = None
             try:
-                tasks = []
                 tasks.append(asyncio.create_task(
                     poll_pin(stop_pin,
                                 finish_event,
@@ -439,49 +507,57 @@ class Blinds:
                     count_revolutions(self._lift_servo,
                                         finish_event,
                                         counting_up,
-                                        handle_count)))
+                                        handle_count,
+                                        lambda: finish(cover_state.STALLED))))
 
                 wait_task = asyncio.create_task(
-                    wait(finish_event, timeout))
+                    wait(timeout, lambda: finish(cover_state.TIMED_OUT)))
 
+                if not await self.drive_tilt(50):
+                    finish(cover_state.TIMED_OUT)
+                else:
+                    print("Starting lift servo...")
+                    self._lift_servo.enable_torque = True
 
-                await self.drive_tilt(50)
+                    print(f"Ramping servo speed up to {speed}...")
 
-                # Set correct state (driving up/down)
-                # Report state
+                    if not await self._lift_servo.start(speed):
+                        print("Failed to start lift servo.")
+                        finish(cover_state.START_FAILED)
+                    else:
+                        print("Lift servo started, waiting for completion...")
 
-                print("Starting lift servo...")
-                self._lift_servo.enable_torque = True
-
-                print(f"Ramping servo speed up to {speed}...")
-
-                if await self._lift_servo.start(speed) == False:
-                    print("Failed to start lift servo.")
-                    return
-
-                print("Lift servo started, waiting for completion...")
+                # Every task ends once finish_event is set.
                 await asyncio.gather(*tasks)
-
-                print("Driving completed successfully.")
-                if await self._lift_servo.stop() == False:
-                    print(f"Failed to stop servo.")
-                self._lift_servo.enable_torque = False
             except Exception as e:
                 print(f"Exception occurred while driving: {e!r}")
+                finish(cover_state.ERROR)
             finally:
                 finish_event.set()
-                wait_task.cancel()
+                if wait_task is not None:
+                    wait_task.cancel()
 
-                # Report state
+            # However the move ended, stop the lift. An exception from here
+            # would leave the cover state opening or closing, and MQTT paused.
+            try:
+                stopped = await self._lift_servo.stop()
+            except Exception as e:
+                print(f"Exception occurred while stopping: {e!r}")
+                stopped = False
+            if not stopped:
+                print("Failed to stop the lift servo.")
+                return cover_state.STOP_FAILED
+            return result
 
         async def close(self):
             await self._as_move(self._close())
 
         async def _close(self):
             print("Closing blinds...")
+            self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
-            await self.operate(self._down_pin,                              # Stop when down pin reached
+            result = await self.operate(self._down_pin,                              # Stop when down pin reached
                                 None,                               # Reverse if up pin reached
                                 self._speed,                               # Drive in negative direction
                                 self._max_revolutions,                      # Stop when max reached
@@ -489,19 +565,23 @@ class Blinds:
                                 os.getenv("close_approach_revs", 10),       # Approach revolutions
                                 False,                                      # The servo angle counts down while closing
                                 os.getenv("close_timeout", 45))                                         # Timeout
-            await self.drive_tilt(self._tilt)
-            self._position = Blinds.POSITION_DOWN
+            # A close that didn't reach the end sensor gives up here. A tilt
+            # that doesn't arrive at the end is a timeout, like any other.
+            if result == cover_state.REACHED and not await self.drive_tilt(self._tilt):
+                result = cover_state.TIMED_OUT
+            self._position = cover_state.after_move(result, Blinds.POSITION_DOWN)
             self.report_state()
-            print("Completed closing blinds.")
+            print(f"Completed closing blinds: {result}.")
 
         async def open(self):
             await self._as_move(self._open())
 
         async def _open(self):
             print("Opening blinds...")
+            self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()
-            await self.operate(self._up_pin,                                # Stop if up pin reached
+            result = await self.operate(self._up_pin,                                # Stop if up pin reached
                                 None,                                       # Ignore up pin
                                 -self._speed,                                # Drive in positive direction
                                 self._max_revolutions,                      # Stop when max reached
@@ -509,20 +589,23 @@ class Blinds:
                                 os.getenv("open_approach_revs", 7),         # Approach revolutions
                                 True,                                       # The servo angle counts up while opening
                                 os.getenv("open_timeout", 45))              # Timeout
-            self._position = Blinds.POSITION_UP
+            self._position = cover_state.after_move(result, Blinds.POSITION_UP)
             self.report_state()
-            self._opened += 1
-            self._on_opened(self)
-            print("Completed opening blinds.")
+            # Only an open that reached the end sensor counts.
+            if self._position == Blinds.POSITION_UP:
+                self._opened += 1
+                self._on_opened(self)
+            print(f"Completed opening blinds: {result}.")
 
         async def stop(self):
             print("Stopping blinds...")
             try:
-                await self._lift_servo.stop()
-                self._lift_servo.enable_torque = False
+                stopped = await self._lift_servo.stop()
             except Exception as e:
                 print(f"Failed to stop lift servo: {e!r}")
-            self._position = Blinds.POSITION_STOPPED
+                stopped = False
+            # Unknown if the stop wasn't confirmed: the lift may be driving.
+            self._position = Blinds.POSITION_STOPPED if stopped else Blinds.POSITION_UNKNOWN
             self.report_state()
             print("Blinds stopped.")
 

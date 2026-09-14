@@ -69,10 +69,22 @@ def stop_servos(reader):
     confirmed."""
     # Duty 0 first: it stops a stalled lift at once. Torque off then leaves
     # both limp, and is written even if the duty wasn't confirmed.
-    lift_duty_0 = _write_zero(reader, LIFT_ID, Address.GOAL_TIME_L, 2)
-    lift_limp = _write_zero(reader, LIFT_ID, Address.TORQUE_ENABLE, 1)
-    tilt_limp = _write_zero(reader, TILT_ID, Address.TORQUE_ENABLE, 1)
+    lift_duty_0 = write_duty_0(reader, LIFT_ID)
+    lift_limp = torque_off(reader, LIFT_ID)
+    tilt_limp = torque_off(reader, TILT_ID)
     return lift_duty_0 and lift_limp, tilt_limp
+
+
+def write_duty_0(reader, scs_id):
+    """Write duty 0 to a servo in wheel mode, and read it back. Returns
+    whether it's confirmed."""
+    return _write_zero(reader, scs_id, Address.GOAL_TIME_L, 2)
+
+
+def torque_off(reader, scs_id):
+    """Turn a servo's torque off, leaving it limp, and read it back. Returns
+    whether it's confirmed off."""
+    return _write_zero(reader, scs_id, Address.TORQUE_ENABLE, 1)
 
 
 def boot_reinit(reader):
