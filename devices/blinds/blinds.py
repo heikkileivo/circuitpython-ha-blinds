@@ -1,3 +1,4 @@
+from end_sensors import UP as UP_SENSOR, DOWN as DOWN_SENSOR
 from packet import Address
 from revolutions import RevolutionCounter
 from servo_health import MoveFigures
@@ -9,7 +10,7 @@ import servo_wait
 import stall
 from time import monotonic_ns, sleep
 import microcontroller
-import asyncio, digitalio
+import asyncio
 import math
 import os
 
@@ -222,29 +223,16 @@ class Servo:
     def __repr__(self):
         return f"Motor {self._id}: Pos: {self._pos} V: {self._v} I: {self._i} L: {self._l} U: {self._u} T: {self._t}"
 
-def get_pin_value(pin):
-    with digitalio.DigitalInOut(pin) as input:
-        input.direction = digitalio.Direction.INPUT
-        input.pull = digitalio.Pull.DOWN
-        return input.value
-
-async def poll_pin(pin, finish_event, callback):
-    print(f"Starting poller for {pin}...")
-    with digitalio.DigitalInOut(pin) as input:
-        input.direction = digitalio.Direction.INPUT
-        input.pull = digitalio.Pull.DOWN
-
-        previous_value = False
-        while True:
-            new_value = input.value
-            if previous_value==False and new_value == True:
-                callback()
-
-            previous_value = new_value
-            if finish_event.is_set():
-                break
-            await asyncio.sleep(0)
-    print(f"Completed polling for pin {pin}.")
+async def watch_end_sensor(end_sensors, sensor, finish_event, callback):
+    """Call callback once the end sensor has gone active since
+    end_sensors.watch(sensor), unless finish_event is set first."""
+    print(f"Watching end sensor {sensor}...")
+    while not finish_event.is_set():
+        if end_sensors.reached(sensor):
+            callback()
+            break
+        await asyncio.sleep(0)
+    print(f"Completed watching end sensor {sensor}.")
 
 async def count_revolutions(servo, finish_event, counting_up, callback, on_stall):
     """Sample the lift's servo angle and speed every lift_sample_ms, count
@@ -304,7 +292,7 @@ class Blinds:
         POSITION_MOVING_UP = cover_state.MOVING_UP
         POSITION_MOVING_DOWN = cover_state.MOVING_DOWN
 
-        def __init__(self, reader, update_callback, on_opened, on_moved, up_pin, down_pin, tilt_scale):
+        def __init__(self, reader, update_callback, on_opened, on_moved, end_sensors, tilt_scale):
             self._reader = reader
             self._update_callback = update_callback
             self._on_opened = on_opened
@@ -312,13 +300,13 @@ class Blinds:
             self._moves = 0             # Moves under way, tilt-only ones included
             self._lift_servo = Servo(1, reader)
             self._tilt_servo = Servo(2, reader, scale=tilt_scale)
-            self._down_pin = down_pin
-            self._up_pin = up_pin
+            self._end_sensors = end_sensors
             # The cover state starts as worked out at boot, from the end
             # sensors and the record in NVM. The record keeps an interrupted
             # move's direction.
             self._store = persist.Store(microcontroller.nvm)
-            self._position = cover_state.at_boot(get_pin_value(up_pin), get_pin_value(down_pin),
+            self._position = cover_state.at_boot(end_sensors.active(UP_SENSOR),
+                                                 end_sensors.active(DOWN_SENSOR),
                                                  self._store.state)
             print(f"Cover state at boot: {self._position}, stored {self._store.state}.")
             h = os.getenv("window_height", 1800.0)
@@ -465,7 +453,7 @@ class Blinds:
             except Exception as e:
                 print(f"Failed to store the cover state: {e!r}")
 
-        async def operate(self, end, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
+        async def operate(self, end, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
             """Drive the lift until its end sensor, and stop it. Returns how
             the move ended, one of cover_state's results: the first way to
             come, or STOP_FAILED if the lift's stop wasn't confirmed.
@@ -475,7 +463,10 @@ class Blinds:
             move leaves toward end, UP or DOWN, after the confirmed stop. A
             move whose lift never started, as its tilt didn't arrive, leaves
             the stored state as it was: the blind hasn't moved."""
-            if get_pin_value(stop_pin):
+            # The end sensor toward end is watched from here on: a press that
+            # comes later, even before the lift starts, ends the move.
+            sensor = UP_SENSOR if end == Blinds.POSITION_UP else DOWN_SENSOR
+            if self._end_sensors.watch(sensor):
                 print("Already at stopped state.")
                 self._save_state(end)
                 return cover_state.REACHED
@@ -489,8 +480,8 @@ class Blinds:
                     result = how
                 finish_event.set()
 
-            def pin_reached():
-                print("Stop pin reached, stopping...")
+            def sensor_reached():
+                print("End sensor reached, stopping...")
                 finish(cover_state.REACHED)
 
             revs = max_revs
@@ -507,35 +498,15 @@ class Blinds:
                     except ServoCommFailure as e:
                         print(f"Failed to slow servo down: {e}")
 
-
-            def wrong_pin_reached():
-                print("Wrong pin reached, spooling in wrong direction...")
-                try:
-                    self._lift_servo.speed = 0
-                except ServoCommFailure as e:
-                    print(f"Failed to stop lift servo for reversing: {e}")
-
-                try:
-                    self._lift_servo.speed = -speed
-                except ServoCommFailure as e:
-                    print(f"Failed to start lift servo for reversing: {e}")
-
-                revs = max_revs # Reset revolution counter
-
             tasks = []
             wait_task = None
             lift_started = False
             try:
                 tasks.append(asyncio.create_task(
-                    poll_pin(stop_pin,
-                                finish_event,
-                                pin_reached)))
-
-                if wrong_pin:
-                    tasks.append(asyncio.create_task(
-                        poll_pin(wrong_pin,
-                                    finish_event,
-                                    wrong_pin_reached)))
+                    watch_end_sensor(self._end_sensors,
+                                     sensor,
+                                     finish_event,
+                                     sensor_reached)))
 
                 tasks.append(asyncio.create_task(
                     count_revolutions(self._lift_servo,
@@ -595,10 +566,8 @@ class Blinds:
             self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
-            result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward
-                                self._down_pin,                              # Stop when down pin reached
-                                None,                               # Reverse if up pin reached
-                                self._speed,                               # Drive in negative direction
+            result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward, whose end sensor stops it
+                                self._speed,                              # Drive in negative direction
                                 self._max_revolutions,                      # Stop when max reached
                                 os.getenv("close_approach_speed", 300),    # Approach speed
                                 os.getenv("close_approach_revs", 10),       # Approach revolutions
@@ -620,10 +589,8 @@ class Blinds:
             self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()
-            result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward
-                                self._up_pin,                                # Stop if up pin reached
-                                None,                                       # Ignore up pin
-                                -self._speed,                                # Drive in positive direction
+            result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward, whose end sensor stops it
+                                -self._speed,                               # Drive in positive direction
                                 self._max_revolutions,                      # Stop when max reached
                                 -os.getenv("open_approach_speed", 300),      # Approach speed
                                 os.getenv("open_approach_revs", 7),         # Approach revolutions

@@ -2,15 +2,15 @@ import time, gc, os, sys, json
 from time import sleep
 import microcontroller
 from watchdog import WatchDogMode
-import board, digitalio, busio
+import board, busio
 import tinys3
 import supervisor
 import wifi
 import asyncio
 import keypad
 import time
-from adafruit_debouncer import Debouncer
 from blinds import Blinds
+from end_sensors import EndSensors
 from packet import Reader
 from components import blinds_discovery
 import servo_health
@@ -55,6 +55,13 @@ SERVO_SETTLE_S = 2
 # While the blind is idle, the servos' health is read and published this
 # often, so the idle voltage and temperature stay current.
 SERVO_IDLE_READ_S = 600
+
+# keypad scans the end sensors this often. At full speed the blind crosses
+# an end sensor's active zone, a few millimetres long, in about 40 ms.
+END_SENSOR_SCAN_S = 0.01
+# Whether keypad's Keys.reset() reports the pressed keys, as it does since
+# CircuitPython 9.2.1. Before, it reports the released ones.
+KEYS_RESET_REPORTS_PRESSED = sys.implementation.version >= (9, 2, 1)
 
 # The cover state HA is told for each of the blind's Blinds.POSITION_* values.
 COVER_STATES = {Blinds.POSITION_UNKNOWN: "unknown",
@@ -241,19 +248,26 @@ async def main():
                             baudrate=250000,
                             receiver_buffer_size=32)
     reader = Reader(uart)
+    keys = None
     try:
-        await run_blind(reader)
+        # The end sensors, up then down: active high, with pull-downs.
+        keys = keypad.Keys((board.D1, board.D2), value_when_pressed=True,
+                           interval=END_SENSOR_SCAN_S)
+        await run_blind(reader, EndSensors(keys, KEYS_RESET_REPORTS_PRESSED))
     finally:
         # Only a failure ends a run, and its move no longer runs: stop the
-        # servos, then free the UART for the next run.
+        # servos, then free the UART and the end sensors' pins for the next
+        # run.
         try:
             servo_health.stop_servos(reader)
         except Exception as e:
             print(f"Failed to stop the servos: {e!r}")
         uart.deinit()
+        if keys is not None:
+            keys.deinit()
 
 
-async def run_blind(reader):
+async def run_blind(reader, end_sensors):
     # A controller reset leaves the servos doing whatever they were doing.
     # On a hard reset boot.py has stopped them already. Stop them again,
     # which also covers a soft reload, and read their health, which is
@@ -394,8 +408,7 @@ async def run_blind(reader):
         report_state,
         on_opened,
         on_moved,
-        board.D1,
-        board.D2,
+        end_sensors,
         tilt_scale)
 
     # From here on this task feeds the watchdog, through the Wi-Fi connect's
