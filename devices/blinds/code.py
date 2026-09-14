@@ -403,7 +403,7 @@ async def run_blind(reader, end_sensors):
             publish_if_connected(mqtt, disc.topic("servo_min_voltage", "state"), min_voltage, retain=True)
         asyncio.create_task(publish_servo_health_settled())
 
-    async def escalate_failed_stop():
+    async def fail_on_unconfirmed_stop():
         # A lift stop that wasn't confirmed has left the lift limp, if it
         # could. Publish the servo health as an error, then fail main(): the
         # restart loop takes over, and its next run re-runs the boot re-init.
@@ -437,7 +437,7 @@ async def run_blind(reader, end_sensors):
     tasks.append(asyncio.create_task(status_blinker(blinds)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
     tasks.append(asyncio.create_task(read_servos_while_idle(blinds, publish_servo_health)))
-    tasks.append(asyncio.create_task(escalate_failed_stop()))
+    tasks.append(asyncio.create_task(fail_on_unconfirmed_stop()))
 
     await asyncio.gather(*tasks)
 

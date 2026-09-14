@@ -13,9 +13,9 @@ from servo_health import (MoveFigures, ServoRead, boot_reinit, classify, health_
                           idle_reads, servo_min_voltage, stop_servos)
 
 # Writes a FakeServo can refuse, as (address, data bytes).
-DUTY_0 = (Address.GOAL_TIME_L, b"\x00\x00")
-TORQUE_1 = (Address.TORQUE_ENABLE, b"\x01")
-TORQUE_2 = (Address.TORQUE_ENABLE, b"\x02")
+DUTY_0_WRITE = (Address.GOAL_TIME_L, b"\x00\x00")
+TORQUE_1_WRITE = (Address.TORQUE_ENABLE, b"\x01")
+TORQUE_2_WRITE = (Address.TORQUE_ENABLE, b"\x02")
 
 # MQTT_ATTRIBUTES_BLOCKED in homeassistant/components/mqtt/entity.py (dev,
 # 2026-09-13), with its enum members spelt out.
@@ -244,7 +244,7 @@ class BootReinitTest(unittest.TestCase):
         self.assertEqual(lift.torque, 2)
 
     def test_a_lift_that_doesnt_accept_torque_2_brakes_with_torque_1(self):
-        lift = FakeServo(1, duty=800, torque=0, refuses=[TORQUE_2])
+        lift = FakeServo(1, duty=800, torque=0, refuses=[TORQUE_2_WRITE])
 
         lift_read, _ = boot_reinit(Reader(FakeBus(lift, FakeServo(2))))
 
@@ -253,17 +253,17 @@ class BootReinitTest(unittest.TestCase):
 
     def test_a_lift_whose_duty_0_never_reads_back_is_left_limp(self):
         # Torque 2 might not override the duty, so it's never the fallback.
-        lift = FakeServo(1, duty=800, torque=1, refuses=[DUTY_0])
+        lift = FakeServo(1, duty=800, torque=1, refuses=[DUTY_0_WRITE])
 
         lift_read, _ = boot_reinit(Reader(FakeBus(lift, FakeServo(2))))
 
         self.assertEqual((lift.duty, lift.torque), (800, 0))
         self.assertFalse(lift_read.stop_confirmed)
 
-    def test_a_brake_that_cant_be_confirmed_counts_as_a_uart_error_but_the_stop_holds(self):
+    def test_a_brake_that_cant_be_confirmed_counts_as_a_uart_error_but_the_stop_is_confirmed(self):
         # The stage 6 firmware left the lift limp. This one answers, but takes
         # neither brake.
-        lift = FakeServo(1, torque=0, refuses=[TORQUE_2, TORQUE_1])
+        lift = FakeServo(1, torque=0, refuses=[TORQUE_2_WRITE, TORQUE_1_WRITE])
 
         message = health_message(*boot_reinit(Reader(FakeBus(lift, FakeServo(2)))))
 
@@ -356,7 +356,7 @@ class IdleReadTest(unittest.TestCase):
         self.assertEqual(classify(tilt_read), "no_reply")
 
     def test_after_a_lift_stop_that_wasnt_confirmed_the_lift_is_an_error(self):
-        # The blind escalates, and publishes this first.
+        # The blind publishes this before main() fails.
         lift_read, tilt_read = idle_reads(Reader(FakeBus(FakeServo(1), FakeServo(2))),
                                           lift_stop_confirmed=False)
 

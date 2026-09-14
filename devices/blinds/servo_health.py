@@ -68,7 +68,7 @@ def servo_min_voltage(lift_move, tilt_move):
 # Each write of the lift's stop sequence, as (address, data).
 _STOP_WRITES = {lift_stop.DUTY_0: (Address.GOAL_TIME_L, [0, 0]),
                 lift_stop.BRAKE: (Address.TORQUE_ENABLE, [2]),
-                lift_stop.BRAKE_1: (Address.TORQUE_ENABLE, [1]),
+                lift_stop.FALLBACK_BRAKE: (Address.TORQUE_ENABLE, [1]),
                 lift_stop.LIMP: (Address.TORQUE_ENABLE, [0])}
 
 
@@ -80,11 +80,12 @@ def stop_servos(reader):
     return stop_lift(reader), torque_off(reader, TILT_ID)
 
 
-def stop_lift(reader, duty_0=None):
-    """Carry out the lift's stop sequence (lift_stop). duty_0 is the outcome
-    of a duty 0 the caller has written already, or None to start with it.
-    Returns how the sequence ended."""
-    step, outcome = (None, None) if duty_0 is None else (lift_stop.DUTY_0, duty_0)
+def stop_lift(reader, duty_0_outcome=None):
+    """Carry out the lift's stop sequence (lift_stop). duty_0_outcome is the
+    outcome of a duty 0 the caller has written already, or None to start
+    with it. Returns how the sequence ended."""
+    step, outcome = ((None, None) if duty_0_outcome is None
+                     else (lift_stop.DUTY_0, duty_0_outcome))
     while True:
         step = lift_stop.next_step(step, outcome)
         if step in lift_stop.ENDS:
@@ -92,7 +93,7 @@ def stop_lift(reader, duty_0=None):
         outcome = _write_checked(reader, LIFT_ID, *_STOP_WRITES[step])
         print(f"Lift stop: {step} {outcome}.")
     if step == lift_stop.BRAKE_UNCONFIRMED:
-        # The motor has stopped anyway, so it doesn't escalate.
+        # The motor has stopped anyway, so main() doesn't fail.
         reader.count_uart_error(LIFT_ID)
     print(f"Lift stop: {step}.")
     return step
@@ -107,7 +108,7 @@ def write_duty_0(reader, scs_id):
 def torque_off(reader, scs_id):
     """Turn a servo's torque off, leaving it limp, and read it back. Returns
     whether it's confirmed off."""
-    return _write_checked(reader, scs_id, Address.TORQUE_ENABLE, [0]) == lift_stop.CONFIRMED
+    return _write_checked(reader, scs_id, *_STOP_WRITES[lift_stop.LIMP]) == lift_stop.CONFIRMED
 
 
 def boot_reinit(reader):

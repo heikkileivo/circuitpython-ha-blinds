@@ -202,16 +202,16 @@ class Servo:
         has passed. A duty 0 that isn't confirmed leaves it limp instead, at
         once. Returns how the sequence ended."""
         print(f"Stopping servo...")
-        duty_0 = self._write_duty_0()
-        if duty_0 == lift_stop.CONFIRMED:
+        duty_0_outcome = self._write_duty_0()
+        if duty_0_outcome == lift_stop.CONFIRMED:
             deadline_ms = os.getenv("lift_stop_deadline_ms", servo_wait.STOP_DEADLINE_MS)
             if not await servo_wait.until_still(lambda: self.is_moving, now_ms, deadline_ms):
                 print(f"Servo {self._id} didn't stop moving within {deadline_ms} ms.")
                 # It may have missed the first duty 0.
-                duty_0 = self._write_duty_0()
-        end = servo_health.stop_lift(self._reader, duty_0)
-        print(f"Servo {self._id} stopped: {end}.")
-        return end
+                duty_0_outcome = self._write_duty_0()
+        ended = servo_health.stop_lift(self._reader, duty_0_outcome)
+        print(f"Servo {self._id} stopped: {ended}.")
+        return ended
 
     def _write_duty_0(self):
         """Write duty 0, and read it back. Returns the read-back's outcome,
@@ -330,7 +330,7 @@ class Blinds:
             self._revolutions = 0
             self._opened = 0
             self._tilt_move = None      # The tilt-only move's task, if one ran
-            # Set once a lift stop isn't confirmed, which code.py escalates.
+            # Set once a lift stop isn't confirmed. code.py then fails main().
             self.stop_failed = asyncio.Event()
 
 
@@ -472,7 +472,8 @@ class Blinds:
             the move ended, one of cover_state's results: the first way to
             come, or STOP_FAILED if the lift's stop wasn't confirmed. Every
             exit, exceptions and cancellation included, ends with the lift's
-            stop sequence, which leaves it braking.
+            stop sequence, which leaves it braking, or limp if its duty 0
+            isn't confirmed.
 
             It drives at speed, then at slow_speed, the approach speed,
             within approach_revs of the end by travel, or all the way with
@@ -512,16 +513,6 @@ class Blinds:
                 finish(cover_state.REACHED)
 
             tracker = self._tracker
-            tracker.begin(end == Blinds.POSITION_UP, from_end)
-            # settings.toml takes no floats, so a fractional value must be quoted.
-            margin = float(os.getenv("travel_margin_revs", 2))
-            if tracker.approach_due(approach_revs):
-                speed = slow_speed
-            if math.isnan(tracker.travel):
-                # All the way at approach speed takes longer.
-                timeout = os.getenv("approach_timeout", 120)
-            print(f"Travel {tracker.travel} of {tracker.full_or_estimate} revolutions, driving at {speed}.")
-            slowed = speed == slow_speed
             lift_started = False
 
             def handle_sample():
@@ -540,6 +531,17 @@ class Blinds:
             tasks = []
             wait_task = None
             try:
+                tracker.begin(end == Blinds.POSITION_UP, from_end)
+                # settings.toml takes no floats, so a fractional value must be quoted.
+                margin = float(os.getenv("travel_margin_revs", 2))
+                if tracker.approach_due(approach_revs):
+                    speed = slow_speed
+                if math.isnan(tracker.travel):
+                    # All the way at approach speed takes longer.
+                    timeout = os.getenv("approach_timeout", 120)
+                print(f"Travel {tracker.travel} of {tracker.full_or_estimate} revolutions, driving at {speed}.")
+                slowed = speed == slow_speed
+
                 tasks.append(asyncio.create_task(
                     watch_end_sensor(self._end_sensors,
                                      sensor,
@@ -613,13 +615,17 @@ class Blinds:
             # An exception from here would leave the cover state opening or
             # closing, and MQTT paused.
             try:
-                end = await self._lift_servo.stop()
+                ended = await self._lift_servo.stop()
             except Exception as e:
-                # main()'s finally runs the stop sequence again, which writes
-                # torque 0 if duty 0 still isn't confirmed.
+                # Run the sequence again from duty 0, without the wait, so
+                # the lift still ends braking, or limp.
                 print(f"Exception occurred while stopping: {e!r}")
-                end = lift_stop.STOP_UNCONFIRMED
-            if lift_stop.stopped(end):
+                try:
+                    ended = servo_health.stop_lift(self._reader)
+                except Exception as e:
+                    print(f"Exception occurred while stopping again: {e!r}")
+                    ended = lift_stop.STOP_UNCONFIRMED
+            if lift_stop.stopped(ended):
                 return True
             self._tracker.lose()
             self.stop_failed.set()
