@@ -4,6 +4,7 @@ from servo_health import MoveFigures
 from tilt import read_at_boot
 import servo_health
 import cover_state
+import persist
 import servo_wait
 import stall
 from time import monotonic_ns, sleep
@@ -304,7 +305,6 @@ class Blinds:
         POSITION_MOVING_DOWN = cover_state.MOVING_DOWN
 
         def __init__(self, reader, update_callback, on_opened, on_moved, up_pin, down_pin, tilt_scale):
-            self._position = Blinds.POSITION_DOWN
             self._reader = reader
             self._update_callback = update_callback
             self._on_opened = on_opened
@@ -314,6 +314,13 @@ class Blinds:
             self._tilt_servo = Servo(2, reader, scale=tilt_scale)
             self._down_pin = down_pin
             self._up_pin = up_pin
+            # The cover state starts as worked out at boot, from the end
+            # sensors and the record in NVM. The record keeps an interrupted
+            # move's direction.
+            self._store = persist.Store(microcontroller.nvm)
+            self._position = cover_state.at_boot(get_pin_value(up_pin), get_pin_value(down_pin),
+                                                 self._store.state)
+            print(f"Cover state at boot: {self._position}, stored {self._store.state}.")
             h = os.getenv("window_height", 1800.0)
             d = os.getenv("spindle_diameter", 20.0)
             self._max_revolutions = int( h / (d * 3.14159)) # ToDo: add settings
@@ -446,12 +453,31 @@ class Blinds:
         def position(self, value):
             self._position = value
 
-        async def operate(self, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
+        def _save_state(self, state):
+            """Store a cover state in NVM, while the lift servo is stopped.
+            Unknown follows a stop that wasn't confirmed, when the lift may
+            be driving, so it isn't stored. Travel stays unknown until it's
+            tracked (#50)."""
+            if state == Blinds.POSITION_UNKNOWN:
+                return
+            try:
+                self._store.save(state, persist.NAN)
+            except Exception as e:
+                print(f"Failed to store the cover state: {e!r}")
+
+        async def operate(self, end, stop_pin, wrong_pin, speed, max_revs, slow_speed, slow_revs, counting_up, timeout):
             """Drive the lift until its end sensor, and stop it. Returns how
             the move ended, one of cover_state's results: the first way to
-            come, or STOP_FAILED if the lift's stop wasn't confirmed."""
+            come, or STOP_FAILED if the lift's stop wasn't confirmed.
+
+            It stores the opening or closing just before the lift starts, so
+            a reset mid-move boots as an interrupted move, and the state the
+            move leaves toward end, UP or DOWN, after the confirmed stop. A
+            move whose lift never started, as its tilt didn't arrive, leaves
+            the stored state as it was: the blind hasn't moved."""
             if get_pin_value(stop_pin):
                 print("Already at stopped state.")
+                self._save_state(end)
                 return cover_state.REACHED
             finish_event = asyncio.Event()
             result = None
@@ -498,6 +524,7 @@ class Blinds:
 
             tasks = []
             wait_task = None
+            lift_started = False
             try:
                 tasks.append(asyncio.create_task(
                     poll_pin(stop_pin,
@@ -523,6 +550,8 @@ class Blinds:
                 if not await self.drive_tilt(50):
                     finish(cover_state.TIMED_OUT)
                 else:
+                    self._save_state(self._position)
+                    lift_started = True
                     print("Starting lift servo...")
                     self._lift_servo.enable_torque = True
 
@@ -554,6 +583,8 @@ class Blinds:
             if not stopped:
                 print("Failed to stop the lift servo.")
                 return cover_state.STOP_FAILED
+            if lift_started:
+                self._save_state(cover_state.after_move(result, end))
             return result
 
         async def close(self):
@@ -564,7 +595,8 @@ class Blinds:
             self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_DOWN
             self.report_state()
-            result = await self.operate(self._down_pin,                              # Stop when down pin reached
+            result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward
+                                self._down_pin,                              # Stop when down pin reached
                                 None,                               # Reverse if up pin reached
                                 self._speed,                               # Drive in negative direction
                                 self._max_revolutions,                      # Stop when max reached
@@ -588,7 +620,8 @@ class Blinds:
             self._cancel_tilt_move()
             self._position = Blinds.POSITION_MOVING_UP
             self.report_state()
-            result = await self.operate(self._up_pin,                                # Stop if up pin reached
+            result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward
+                                self._up_pin,                                # Stop if up pin reached
                                 None,                                       # Ignore up pin
                                 -self._speed,                                # Drive in positive direction
                                 self._max_revolutions,                      # Stop when max reached
@@ -613,51 +646,9 @@ class Blinds:
                 stopped = False
             # Unknown if the stop wasn't confirmed: the lift may be driving.
             self._position = Blinds.POSITION_STOPPED if stopped else Blinds.POSITION_UNKNOWN
+            self._save_state(self._position)
             self.report_state()
             print("Blinds stopped.")
 
         def report_state(self):
             self._update_callback(self)
-
-        def store_position(self):
-            print("Storing known position to nvm...")
-            microcontroller.nvm[0:2] = bytes([1, self._position])
-
-        def get_stored_position(self):
-            data = list(microcontroller.nvm[0:2])
-            if data[0] == 0:
-                return None
-            else:
-                return data[1]
-
-        def find_out_current_state(self):
-            print("Finding out current state...")
-            with digitalio.DigitalInOut(self._down_pin) as input:
-                input.direction = digitalio.Direction.INPUT
-                input.pull = digitalio.Pull.DOWN
-                if input.value:
-                    print("According to sensor, current position is down.")
-                    self._position = Blinds.POSITION_DOWN
-                    return
-
-            with digitalio.DigitalInOut(self._up_pin) as input:
-                input.direction = digitalio.Direction.INPUT
-                input.pull = digitalio.Pull.DOWN
-                if input.value:
-                    print("According to sensor, current position is up.")
-                    self._position = Blinds.POSITION_UP
-                    return
-
-            print("Position is unknown...")
-            self._direction_unknown = True
-            self.target = Blinds.POSITION_DOWN
-            if False:
-                stored_position = self.get_stored_position()
-                if stored_position:
-                    print(f"Previous stored position = {stored_position}, moving there.")
-                    self.target = stored_position
-                else:
-                    print("No stored position, moving down.")
-                    self.target = Blinds.POSITION_DOWN
-
-            self.report_state()
