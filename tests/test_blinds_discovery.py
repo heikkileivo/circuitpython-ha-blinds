@@ -108,6 +108,25 @@ class BlindsDiscoveryTest(unittest.TestCase):
         self.assertEqual(voltage["suggested_display_precision"], 1)
         self.assertEqual(voltage["state_topic"], "blinds_f412fa448000/servo_min_voltage/state")
 
+    def test_servo_temperatures_are_diagnostic_temperatures_read_from_servo_health(self):
+        # Sensors of their own, so HA graphs them and keeps long-term
+        # statistics. They read servo_health's message, so they add no topics.
+        components = json.loads(blinds_payload())["cmps"]
+
+        for servo in ("lift", "tilt"):
+            with self.subTest(servo=servo):
+                temperature = components[f"blinds_f412fa448000_{servo}_temperature"]
+
+                self.assertEqual(temperature["p"], "sensor")
+                self.assertEqual(temperature["name"], f"{servo.capitalize()} temperature")
+                self.assertEqual(temperature["entity_category"], "diagnostic")
+                self.assertEqual(temperature["device_class"], "temperature")
+                self.assertEqual(temperature["unit_of_measurement"], "°C")
+                self.assertEqual(temperature["state_class"], "measurement")
+                self.assertEqual(temperature["state_topic"], "blinds_f412fa448000/servo_health/state")
+                self.assertEqual(temperature["value_template"],
+                                 f"{{{{ value_json.{servo}.temperature }}}}")
+
 
 if __name__ == "__main__":
     unittest.main()

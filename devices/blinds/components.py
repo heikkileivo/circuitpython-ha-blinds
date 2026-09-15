@@ -77,6 +77,20 @@ def add_components(disc):
         "state_class": "measurement",
         "suggested_display_precision": 1,
     })
+    # Each servo's temperature, read from servo_health's message, so they add
+    # no topics. A failing lift runs hot; the tilt, limp in the same cavity,
+    # is its reference. A servo that doesn't reply reads null, which HA shows
+    # as unknown.
+    for servo in ("lift", "tilt"):
+        disc.add_component(servo + "_temperature", "sensor", {
+            "name": servo.capitalize() + " temperature",
+            "entity_category": "diagnostic",
+            "device_class": "temperature",
+            "unit_of_measurement": "°C",
+            "state_class": "measurement",
+            "state_topic": disc.topic("servo_health", "state"),
+            "value_template": "{{ value_json." + servo + ".temperature }}",
+        })
     # Dropped entities. The removals stay in every payload for good, so they
     # take effect whichever blind boots first and after any rollback.
     disc.remove_component("uptime", "sensor")
