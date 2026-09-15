@@ -81,10 +81,11 @@ def add_components(disc):
     # Each servo's temperature, read from servo_health's message, so they add
     # no topics. A failing lift runs hot; the tilt, limp in the same cavity,
     # is its reference. A servo that doesn't reply reads null, which HA shows
-    # as unknown.
-    for servo in ("lift", "tilt"):
+    # as unknown. The names are spelled out: CircuitPython's str has no
+    # capitalize() (#103).
+    for servo, name in (("lift", "Lift temperature"), ("tilt", "Tilt temperature")):
         disc.add_component(servo + "_temperature", "sensor", {
-            "name": servo.capitalize() + " temperature",
+            "name": name,
             "entity_category": "diagnostic",
             "device_class": "temperature",
             "unit_of_measurement": "°C",

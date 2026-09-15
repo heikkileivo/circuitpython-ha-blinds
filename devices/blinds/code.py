@@ -1,4 +1,4 @@
-import time, gc, os, sys, json
+import time, gc, os, sys, json, traceback
 from time import sleep
 import microcontroller
 from watchdog import WatchDogMode
@@ -87,12 +87,9 @@ def now_ms():
 
 
 def arm_watchdog():
-    # On a later run of main() the mode is RESET already, which setting it
-    # again leaves as it is, so it's fed here too.
-    microcontroller.watchdog.timeout = WATCHDOG_TIMEOUT_S
-    microcontroller.watchdog.mode = WatchDogMode.RESET
-    microcontroller.watchdog.feed()
-    print(f"Watchdog enabled with {WATCHDOG_TIMEOUT_S}s timeout.")
+    # A later run of main() finds it armed already, and only feeds it.
+    if recovery.arm_watchdog(microcontroller.watchdog, WATCHDOG_TIMEOUT_S, WatchDogMode.RESET):
+        print(f"Watchdog enabled with {WATCHDOG_TIMEOUT_S}s timeout.")
 
 
 def unknown_failure_code(e):
@@ -469,7 +466,9 @@ while True:
     try:
         asyncio.run(main())
     except Exception as e:
+        # With its traceback: repr(e) alone didn't say where it failed (#103).
         print(f"main() failed: {e!r}")
+        traceback.print_exception(e)
     if restart_loop.failed(started_ms, now_ms()):
         print("main() keeps failing, restarting.")
         reset_cause.restart(reset_cause.RESTART_LOOP)
