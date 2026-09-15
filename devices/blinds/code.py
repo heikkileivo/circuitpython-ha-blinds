@@ -477,6 +477,6 @@ while True:
     asyncio.new_event_loop()
     gc.collect()
     print(f"Running main() again in {RESTART_LOOP_DELAY_S} s...")
-    # main() armed the watchdog first thing, and arms it again.
+    # main() armed the watchdog first thing, and its next run feeds it.
     microcontroller.watchdog.feed()
     sleep(RESTART_LOOP_DELAY_S)

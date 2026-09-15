@@ -57,9 +57,9 @@ def arm_watchdog(watchdog, timeout_s, mode):
     CircuitPython 9.1 raises espidf.IDFError "Invalid argument" at setting an
     armed watchdog's timeout, which failed every later run of main() at once
     (#103)."""
-    armed = watchdog.mode != mode
-    if armed:
+    arming = watchdog.mode != mode
+    if arming:
         watchdog.timeout = timeout_s
         watchdog.mode = mode
     watchdog.feed()
-    return armed
+    return arming
