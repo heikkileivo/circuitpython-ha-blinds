@@ -20,14 +20,15 @@ host tests run it."""
 
 import cover_state
 
-# Tuned values, in revolutions, which the re_seat_revs and crawl_down_revs
-# settings override. Stage 7's gate (#54) measured Middle's up end sensor: a
-# lower zone about 0.32 revolutions tall, a gap of about 0.05, then an upper
-# zone up to the head rail, so above the lower zone the sensor reads inactive
-# only in the gap. Finding it past the gap and a stop's coast, at most 0.07
-# revolutions, takes far less than 0.5.
-RE_SEAT_REVS = 0.5
-CRAWL_DOWN_REVS = 0.5
+# Values, in revolutions, which the re_seat_revs and crawl_down_revs settings
+# override. Stage 7's gate (#54) measured Middle's up end sensor: a lower zone
+# about 0.32 revolutions tall, a gap of 0.04-0.05, then an upper zone up to
+# the head rail, which is 0.41 above the lower zone's top. A crawl down of 1
+# from the head rail finds the lower zone even where no upper zone reaches
+# it, and a re-seat of 1 covers a stop that coasted on while the loop stalled
+# (#95). Both passed the gate's re-seat tests on Middle and Left.
+RE_SEAT_REVS = 1.0
+CRAWL_DOWN_REVS = 1.0
 
 # The drives of an open or close.
 MOVE = "move"               # The move proper, toward the end.
