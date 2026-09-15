@@ -57,7 +57,8 @@ SERVO_SETTLE_S = 2
 SERVO_IDLE_READ_S = 600
 
 # keypad scans the end sensors this often. At full speed the blind crosses
-# an end sensor's active zone, a few millimetres long, in about 40 ms.
+# the lower zone of Middle's up end sensor, about 0.3 revolutions of the lift,
+# in about 0.3 s (#54).
 END_SENSOR_SCAN_S = 0.01
 # Whether keypad's Keys.reset() reports the pressed keys, as it does since
 # CircuitPython 9.2.1. Before, it reports the released ones.

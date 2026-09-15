@@ -20,15 +20,12 @@ host tests run it."""
 
 import cover_state
 
-# In revolutions, which the re_seat_revs and crawl_down_revs settings
-# override. Tuned at stage 7's gate (#54) on Middle, whose up end sensor is
-# active over two zones: a lower one about 0.32 rev tall, then, after a gap of
-# about 0.05, an upper one that reaches the head rail, 0.40 above the lower
-# zone. A blind at the head rail reads the sensor active, so above the lower
-# zone it's inactive only in the gap. A stop from approach speed coasts about
-# 0.07 going up and 0.03 going down. Finding the sensor past the gap and a
-# coast needs a fraction of these, and a blind resting just below its up end
-# sensor crawls down and back no further than it must.
+# Tuned values, in revolutions, which the re_seat_revs and crawl_down_revs
+# settings override. Stage 7's gate (#54) measured Middle's up end sensor: a
+# lower zone about 0.32 revolutions tall, a gap of about 0.05, then an upper
+# zone up to the head rail, so above the lower zone the sensor reads inactive
+# only in the gap. Finding it past the gap and a stop's coast, at most 0.07
+# revolutions, takes far less than 0.5.
 RE_SEAT_REVS = 0.5
 CRAWL_DOWN_REVS = 0.5
 
