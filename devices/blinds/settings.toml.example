@@ -20,13 +20,23 @@ close_approach_speed = 300
 # millimetres; defaults 1800 and 20. A move stops once its travel is
 # travel_margin_revs past its end; default 2. It gives up after open_timeout
 # or close_timeout seconds, default 45, or approach_timeout, default 120, with
-# the travel unknown.
+# the travel unknown or crawling up to the up end sensor.
 # window_height = 1800
 # spindle_diameter = 20
 # travel_margin_revs = 2
 # open_timeout = 45
 # close_timeout = 45
 # approach_timeout = 120
+# Optional. A move that reached its end sensor but stopped past its zone
+# re-seats: it crawls back at approach speed until the sensor is active, at
+# most re_seat_revs revolutions. An open that may rest at the top off its up
+# end sensor first crawls down at most crawl_down_revs revolutions looking for
+# it; if it doesn't find it, the blind was below, and it crawls up to it. A
+# crawl down or re-seat gives up after crawl_timeout seconds. Defaults 1, 1
+# and 15; quote a fraction, such as "0.8".
+# re_seat_revs = 1
+# crawl_down_revs = 1
+# crawl_timeout = 15
 # Optional. How often the lift's servo angle is sampled during a move, in
 # milliseconds; default 50.
 # lift_sample_ms = 50
