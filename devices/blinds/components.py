@@ -58,13 +58,14 @@ def add_components(disc):
     })
     # One retained JSON message: the health for the state, and each servo's
     # figures for the attributes.
+    health_topic = disc.topic("servo_health", "state")
     disc.add_component("servo_health", "sensor", {
         "name": "Servo health",
         "entity_category": "diagnostic",
         "device_class": "enum",
         "options": list(servo_health.HEALTHS),
         "value_template": "{{ value_json.health }}",
-        "json_attributes_topic": disc.topic("servo_health", "state"),
+        "json_attributes_topic": health_topic,
     })
     # The lowest supply voltage either servo reported during the last move.
     # Also in servo_health's attributes, but a sensor of its own gets graphs
@@ -77,6 +78,20 @@ def add_components(disc):
         "state_class": "measurement",
         "suggested_display_precision": 1,
     })
+    # Each servo's temperature, read from servo_health's message, so they add
+    # no topics. A failing lift runs hot; the tilt, limp in the same cavity,
+    # is its reference. A servo that doesn't reply reads null, which HA shows
+    # as unknown.
+    for servo in ("lift", "tilt"):
+        disc.add_component(servo + "_temperature", "sensor", {
+            "name": servo.capitalize() + " temperature",
+            "entity_category": "diagnostic",
+            "device_class": "temperature",
+            "unit_of_measurement": "°C",
+            "state_class": "measurement",
+            "state_topic": health_topic,
+            "value_template": "{{ value_json." + servo + ".temperature }}",
+        })
     # Dropped entities. The removals stay in every payload for good, so they
     # take effect whichever blind boots first and after any rollback.
     disc.remove_component("uptime", "sensor")
