@@ -22,6 +22,13 @@ class AfterMoveTest(unittest.TestCase):
                 with self.subTest(result=result, end=end):
                     self.assertEqual(after_move(result, end), cover_state.STOPPED)
 
+    def test_a_move_ended_by_a_stop_command_is_stopped(self):
+        # Wherever STOP caught it, even after its end sensor went active
+        # (#55).
+        for end in (cover_state.UP, cover_state.DOWN):
+            with self.subTest(end=end):
+                self.assertEqual(after_move(cover_state.STOP_COMMAND, end), cover_state.STOPPED)
+
     def test_a_move_whose_stop_wasnt_confirmed_is_unknown(self):
         for end in (cover_state.UP, cover_state.DOWN):
             with self.subTest(end=end):

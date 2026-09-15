@@ -220,9 +220,8 @@ class Mqtt:
         last connect, whichever is later.
 
         It's measured up to the end of the last loop() call, not up to now.
-        Echoes only arrive through loop(), so while the device doesn't call it
-        (the blinds while moving), a quiet echo topic says nothing about the
-        link.
+        Echoes only arrive through loop(), so while the device doesn't call it,
+        a quiet echo topic says nothing about the link.
         """
         if not self._echo_topic:
             return False
