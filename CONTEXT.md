@@ -35,7 +35,7 @@ The part of each turn, at the wrap, where the lift servo's pot gives no reading:
 _Avoid_: Dead band (the servo's position-mode tolerance, registers 26 and 27)
 
 **End sensor**:
-One of the two reed switches (up and down) that a magnet in the blind closes at the end of its travel. Its active zone is only a few millimetres long.
+One of the two reed switches (up and down) that a magnet in the blind closes at the end of its travel. Its active zone can come in two parts: Middle's up end sensor is active over a lower zone about 0.3 revolutions of the lift tall, then, after a gap of 0.04–0.05, over an upper zone that reaches the head rail. So a blind at the head rail reads its up end sensor active.
 _Avoid_: Limit switch, limit sensor, stop pin, reed, up pin, down pin
 
 **Re-seat**:

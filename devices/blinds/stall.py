@@ -1,8 +1,10 @@
 """Deciding that the lift servo has stalled, from its samples during a move.
 Pure, so the host tests run it."""
 
-# Starting values, which the stall_* settings override. The bench saw the
-# speed read 0 and the servo angle freeze within about 100 ms at the head rail.
+# Values, which the stall_* settings override, kept at stage 7's gate (#54).
+# The bench saw the speed read 0 and the servo angle freeze within about
+# 100 ms at the head rail. At the gate, the stall stop fired 197 ms after the
+# angle froze there: the window, plus up to one 50 ms sample.
 WINDOW_MS = 150
 MAX_SPEED = 20          # counts/s
 MAX_ANGLE_CHANGE = 5    # counts
