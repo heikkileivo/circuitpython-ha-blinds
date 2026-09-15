@@ -151,6 +151,118 @@ class WrapCounterTest(unittest.TestCase):
                                        1, delta=0.02)
 
 
+# The longest a loop() call blocks asyncio, and so the lift's samples: its
+# 0.25 s timeout plus the 0.25 s socket timeout (code.py). It may start any
+# time up to the next sample, so the gap it makes is up to SAMPLE_MS longer.
+PAUSE_MS = 500
+# While the blind moves, loop() runs at most this often.
+PAUSE_EVERY_MS = 1000
+
+
+def sampled_with_pauses(duty, samples, offset, last_pause):
+    """The measured samples as the firmware takes them, one every SAMPLE_MS
+    from offset, while MQTT's loop() pauses them at most once every
+    PAUSE_EVERY_MS, and only after a sample from which the tracker can take
+    the pause. Each pause makes the longest gap it can. last_pause is when
+    loop() last ran, before the phase. Returns the tracker, the angles taken
+    and the times of the pauses."""
+    tracker = Tracker(10.0, FULL, ESTIMATE)
+    tracker.begin(duty < 0, False)
+    angles, pauses = [], [last_pause]
+    due = offset
+    for t, angle, _ in samples:
+        if t < due:
+            continue
+        tracker.feed(angle)
+        angles.append(angle)
+        due = t + SAMPLE_MS
+        if (t - pauses[-1] >= PAUSE_EVERY_MS
+                and tracker.can_pause(duty, PAUSE_MS + SAMPLE_MS)):
+            pauses.append(t)
+            due += PAUSE_MS
+    return tracker, angles, pauses[1:]
+
+
+class PauseTest(unittest.TestCase):
+    """MQTT's loop() blocks asyncio while the blind moves (#55). A gap in
+    the lift's samples longer than a third of a turn can skip the wrap, and
+    lose the turn (#95). So loop() runs only after a sample from which the
+    longest pause can't skip one."""
+
+    def each_paused_run(self):
+        """Every measured phase, sampled from each 10 ms offset, with loop()
+        last run from 0 to 1 s before the phase started."""
+        for name, (duty, samples) in measured_phases().items():
+            for offset in range(0, SAMPLE_MS, MEASURED_EVERY_MS):
+                for last_pause in range(-PAUSE_EVERY_MS, 0, 20):
+                    yield name, duty, samples, sampled_with_pauses(duty, samples, offset, last_pause)
+
+    def test_the_measured_turns_count_despite_the_pauses(self):
+        for name, duty, samples, (tracker, angles, _) in self.each_paused_run():
+            with self.subTest(phase=name, first_angle=angles[0]):
+                # The read at rest after the stop.
+                if angles[-1] != samples[-1][1]:
+                    tracker.feed(samples[-1][1])
+                    angles.append(samples[-1][1])
+
+                self.assertAlmostEqual(
+                    tracker.moved,
+                    MEASURED_TURNS[name] + (angles[-1] - angles[0]) / COUNTS_PER_TURN)
+
+    def test_loop_still_runs_at_least_once_in_every_1_5_s_of_travel(self):
+        # STOP arrives through loop(). At full speed a pause fits in only
+        # part of each turn, which takes about 1 s.
+        for name, _, samples, (_, _, pauses) in self.each_paused_run():
+            with self.subTest(phase=name):
+                self.assertGreaterEqual(len(pauses), (samples[-1][0] - samples[0][0]) // 1500)
+                for earlier, later in zip(pauses, pauses[1:]):
+                    self.assertLessEqual(later - earlier, 1500)
+
+
+class CanPauseTest(unittest.TestCase):
+    # At approach speed and full speed. Down is positive, as the gap's
+    # length is all that counts.
+    APPROACH = 300
+    FULL_SPEED = 800
+    GAP_MS = PAUSE_MS + SAMPLE_MS
+
+    def closing(self, travel, *angles):
+        tracker = Tracker(travel, FULL, ESTIMATE)
+        tracker.begin(False, False)
+        for angle in angles:
+            tracker.feed(angle)
+        return tracker
+
+    def test_not_before_the_moves_first_sample(self):
+        # It would be the move's start angle, taken late.
+        self.assertFalse(self.closing(10.0).can_pause(self.APPROACH, self.GAP_MS))
+
+    def test_not_after_a_stray_at_the_wrap(self):
+        # It leaves where the lift is unsure. The next angle settles it.
+        tracker = self.closing(10.0, 120, 60, 5, 275)
+        self.assertFalse(tracker.can_pause(self.APPROACH, self.GAP_MS))
+
+        tracker.feed(1000)
+        self.assertTrue(tracker.can_pause(self.APPROACH, self.GAP_MS))
+
+    def test_mid_turn_only_at_approach_speed_can_it_pause(self):
+        # At full speed the gap would carry the angle, closing, past the
+        # wrap, and the last third of the turn before it, unseen.
+        tracker = self.closing(10.0, 600)
+
+        self.assertTrue(tracker.can_pause(self.APPROACH, self.GAP_MS))
+        self.assertFalse(tracker.can_pause(self.FULL_SPEED, self.GAP_MS))
+
+    def test_not_within_a_revolution_of_the_end_by_travel(self):
+        # A gap at approach speed covers about 0.26 revolutions.
+        self.assertTrue(self.closing(1.5, 600).can_pause(self.APPROACH, self.GAP_MS))
+        self.assertFalse(self.closing(1.2, 600).can_pause(self.APPROACH, self.GAP_MS))
+
+    def test_with_the_travel_unknown_only_the_turns_count(self):
+        # Where the end is isn't known.
+        self.assertTrue(self.closing(NAN, 600).can_pause(self.APPROACH, self.GAP_MS))
+
+
 class TravelTest(unittest.TestCase):
     def test_opening_adds_the_turns_and_closing_takes_them_off(self):
         tracker = Tracker(3.2, FULL, ESTIMATE)

@@ -90,6 +90,20 @@ class ReSeatTest(unittest.TestCase):
                 self.assertEqual(moves.result, result)
 
 
+class StopCommandTest(unittest.TestCase):
+    def test_a_stop_command_ends_the_move_with_no_drive_after_it(self):
+        # STOP mid-travel (#55): no re-seat, even after the end sensor went
+        # active, and no crawl up after a crawl down.
+        cases = {"move proper": plan(state=cover_state.DOWN, travel=0.0),
+                 "crawl down": plan()}
+        for name, moves in cases.items():
+            with self.subTest(name):
+                moves.next(active=False)
+
+                self.assertIsNone(moves.next(active=False, result=cover_state.STOP_COMMAND))
+                self.assertEqual(moves.result, cover_state.STOP_COMMAND)
+
+
 class AlreadyThereTest(unittest.TestCase):
     def test_an_active_end_sensor_ends_the_move_before_any_drive(self):
         for end in (cover_state.UP, cover_state.DOWN):

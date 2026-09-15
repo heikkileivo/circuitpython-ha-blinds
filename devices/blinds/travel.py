@@ -25,6 +25,23 @@ HIGH_START = 683
 # at the wrap, and is held. The measured jitter there is at most 9.
 BACK_TOLERANCE = 16
 
+# The servo angle reads up to this. Through the dead zone, which starts about
+# here, it holds at about 1018-1022, then 0-1, until the wrap. So an angle
+# within DEAD_ZONE_EDGE counts of the readable end ahead may be a held one,
+# with the lift anywhere up to the wrap.
+READ_MAX = 1022
+DEAD_ZONE_EDGE = 10
+# A turn of the lift takes at least this long at duty 800, in ms, and 800 /
+# |duty| times it at other duties. Middle's lift took 961-1,203 ms at duty 800
+# or its equivalent, fastest at duty 500 closing (#78). This leaves a margin
+# for a lighter load, such as a blind closing from the top.
+FASTEST_TURN_MS = 800
+_FASTEST_TURN_DUTY = 800
+# A pause in the samples ends at least this many revolutions short of the
+# move's end, by travel: an end sensor that goes active in one stops the lift
+# late, past its zone.
+END_MARGIN_REVS = 1.0
+
 _LOW = 0
 _HIGH = 1
 
@@ -51,21 +68,19 @@ class WrapCounter:
         self._angle = None          # The last angle taken
         self._start_angle = None    # The first angle taken
         self._turns = 0
+        self._held = False          # Whether the last angle was held
         self.revs = 0.0
 
     def feed(self, angle):
         """Take one servo angle, unless it's a stray at the wrap."""
-        if angle < LOW_END:
-            zone = _LOW
-        elif angle >= HIGH_START:
-            zone = _HIGH
-        else:
-            zone = None
+        zone = _zone(angle)
+        self._held = True
         if self._zone == self._wrap_from:
             if zone is None:
                 return
             if zone == self._wrap_from and (self._angle - angle) * self._direction > BACK_TOLERANCE:
                 return
+        self._held = False
         if self._start_angle is None:
             self._start_angle = angle
         if self._zone == self._wrap_from and zone == self._wrap_to:
@@ -74,6 +89,31 @@ class WrapCounter:
             self._zone = zone
         self._angle = angle
         self.revs = self._turns + (angle - self._start_angle) / COUNTS_PER_TURN
+
+    def can_skip(self, counts):
+        """Whether the lift can turn counts on from the last angle taken,
+        with none taken between, and its wraps still count: from before the
+        turn's last third, up to the readable end; from within it, up to the
+        end of the next turn's first third. Not before the first angle, nor
+        after a stray, which leaves where the lift is unsure."""
+        if self._angle is None or self._held:
+            return False
+        to_end = READ_MAX - self._angle if self._direction > 0 else self._angle
+        if to_end <= DEAD_ZONE_EDGE:
+            to_end = 0
+        if _zone(self._angle) == self._wrap_from:
+            # The next turn's first third, the narrower of the two.
+            return counts < to_end + READ_MAX - HIGH_START
+        return counts < to_end
+
+
+def _zone(angle):
+    """The servo angle's third of the turn: _LOW, _HIGH, or None mid-turn."""
+    if angle < LOW_END:
+        return _LOW
+    if angle >= HIGH_START:
+        return _HIGH
+    return None
 
 
 class Tracker:
@@ -154,6 +194,19 @@ class Tracker:
     def lose(self):
         """The travel is unknown: the lift may be driving."""
         self.travel = NAN
+
+    def can_pause(self, duty, gap_ms):
+        """Whether the move's samples can pause for gap_ms after the last
+        one, at duty, with its turns still counted, and short of its end by
+        END_MARGIN_REVS, by travel. With the travel unknown, only the turns
+        count: where the end is isn't known."""
+        counts = (gap_ms * abs(duty) * COUNTS_PER_TURN
+                  / (FASTEST_TURN_MS * _FASTEST_TURN_DUTY))
+        if not self._counter.can_skip(counts):
+            return False
+        if math.isnan(self.travel):
+            return True
+        return self.remaining > counts / COUNTS_PER_TURN + END_MARGIN_REVS
 
     def _learn(self, run):
         if not LEARN_MIN * self._estimate <= run <= LEARN_MAX * self._estimate:

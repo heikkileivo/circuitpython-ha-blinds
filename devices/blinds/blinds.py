@@ -1,4 +1,5 @@
 from end_sensors import UP as UP_SENSOR, DOWN as DOWN_SENSOR
+from move_control import MoveControl
 from packet import Address
 from servo_health import MoveFigures
 from tilt import read_at_boot
@@ -239,11 +240,11 @@ async def watch_end_sensor(end_sensors, sensor, finish_event, callback):
         await asyncio.sleep(0)
     print(f"Completed watching end sensor {sensor}.")
 
-async def track_travel(servo, finish_event, tracker, on_sample, on_stall):
-    """Sample the lift's servo angle and speed every lift_sample_ms, feed the
+async def track_travel(servo, finish_event, tracker, sample_ms, on_sample, on_stall):
+    """Sample the lift's servo angle and speed every sample_ms, feed the
     angle to the travel tracker, then call on_sample. Stop the lift at once
     if it stalls, then call on_stall."""
-    sample_s = os.getenv("lift_sample_ms", 50) / 1000
+    sample_s = sample_ms / 1000
     detector = stall.StallDetector(
         window_ms=os.getenv("stall_window_ms", stall.WINDOW_MS),
         max_speed=os.getenv("stall_max_speed", stall.MAX_SPEED),
@@ -331,6 +332,9 @@ class Blinds:
             self._revolutions = 0
             self._opened = 0
             self._tilt_move = None      # The tilt-only move's task, if one ran
+            # One open or close at a time, STOP for it, and whether its drive
+            # under way lets asyncio block.
+            self._control = MoveControl()
             # Set once a lift stop isn't confirmed. code.py then fails main().
             self.stop_failed = asyncio.Event()
 
@@ -420,6 +424,12 @@ class Blinds:
             included. is_moving only covers an open or close."""
             return self._moves > 0
 
+        def may_pause(self, pause_ms):
+            """Whether asyncio may block for pause_ms now, as MQTT's loop()
+            does, with the lift's turns still counted and its end sensor's
+            stop on time. Always, unless a drive of the lift is under way."""
+            return self._control.may_pause(pause_ms)
+
         @property
         def move_figures(self):
             """The lift and tilt servos' figures from the move under way.
@@ -498,7 +508,8 @@ class Blinds:
             as its tilt didn't arrive or the move ended meanwhile, leaves the
             stored state as it was: the blind hasn't moved. Unless its end
             sensor went active meanwhile, which stores that end, as when it's
-            active from the start."""
+            active from the start, or STOP ended it, which stores stopped, as
+            HA is told."""
             sensor = UP_SENSOR if end == Blinds.POSITION_UP else DOWN_SENSOR
             other_end = Blinds.POSITION_DOWN if end == Blinds.POSITION_UP else Blinds.POSITION_UP
             from_end = state == other_end
@@ -537,7 +548,7 @@ class Blinds:
                         tracker.anchor(end)
                 drive = plan.next(self._end_sensors.active(sensor), result)
             result = plan.result
-            if not any_started and result != cover_state.REACHED:
+            if not any_started and result not in (cover_state.REACHED, cover_state.STOP_COMMAND):
                 return result
             print(f"Travel {tracker.travel}, full travel {tracker.full_travel}.")
             self._save_state(cover_state.after_move(result, end))
@@ -592,9 +603,26 @@ class Blinds:
                     except ServoCommFailure as e:
                         print(f"Failed to slow servo down: {e}")
 
+            sample_ms = os.getenv("lift_sample_ms", 50)
+
+            def can_pause(pause_ms):
+                # A pause holds up the drive's samples, and, once it has
+                # ended, its stop. Before the lift starts, nothing turns
+                # meanwhile. The crawl down and the re-seat run within a turn
+                # or so of the end sensor, which the travel can't tell. The
+                # drive's speed is the fastest it drives.
+                if finish_event.is_set():
+                    return False
+                if not lift_started:
+                    return True
+                return drive.revs is None and tracker.can_pause(speed, pause_ms + sample_ms)
+
             tasks = []
             wait_task = None
             try:
+                # STOP ends the drive from here on, at once if it has come
+                # already, and the drive decides whether asyncio may block.
+                self._control.drive(lambda: finish(cover_state.STOP_COMMAND), can_pause)
                 # The end sensor is watched from here on: a press that comes
                 # later, even before the lift starts, ends the drive. So does
                 # one active already, and the lift doesn't start.
@@ -624,6 +652,7 @@ class Blinds:
                     track_travel(self._lift_servo,
                                  finish_event,
                                  tracker,
+                                 sample_ms,
                                  handle_sample,
                                  lambda: finish(cover_state.STALLED))))
 
@@ -661,6 +690,7 @@ class Blinds:
                     wait_task.cancel()
                 # However the move ends, stop the lift.
                 stopped = await self._stop_lift()
+                self._control.drive_ended()
 
             if not stopped:
                 return cover_state.STOP_FAILED, lift_started
@@ -713,7 +743,19 @@ class Blinds:
                 self._tracker.feed(sample[0])
 
         async def close(self):
-            await self._as_move(self._close())
+            await self._one_move("CLOSE", self._close)
+
+        async def _one_move(self, command, move):
+            """Run an open or close, move, as one move, unless one is under
+            way already: a second would drive the lift concurrently. So it's
+            ignored, and STOP must come first."""
+            if not self._control.begin():
+                print(f"Ignoring {command}: an open or close is under way. Send STOP first.")
+                return
+            try:
+                await self._as_move(move())
+            finally:
+                self._control.end()
 
         async def _close(self):
             print("Closing blinds...")
@@ -735,7 +777,7 @@ class Blinds:
             print(f"Completed closing blinds: {result}.")
 
         async def open(self):
-            await self._as_move(self._open())
+            await self._one_move("OPEN", self._open)
 
         async def _open(self):
             print("Opening blinds...")
@@ -757,6 +799,11 @@ class Blinds:
             print(f"Completed opening blinds: {result}.")
 
         async def stop(self):
+            # An open or close under way stops through its own stop sequence,
+            # stores stopped with its travel, and reports it.
+            if self._control.stop():
+                print("Stopping the open or close under way...")
+                return
             print("Stopping blinds...")
             stopped = await self._stop_lift()
             # Unknown if the stop wasn't confirmed: the lift may be driving.

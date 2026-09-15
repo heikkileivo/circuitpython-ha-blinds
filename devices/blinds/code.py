@@ -18,6 +18,7 @@ import reset_cause
 import recovery
 from blink import blink, Color, pixel
 from mqtt import Mqtt
+from mqtt_pace import Pace
 import storage
 
 # Right after the imports, so the one restart after a watchdog reset comes
@@ -35,6 +36,13 @@ except Exception as e:
 # for its timeout to twice that (0.25-0.5 s by default), so while the blind is
 # idle a call starts about every 0.5 s.
 MQTT_SERVICE_SLEEP_S = 0.25
+# While the blind opens or closes, loop() runs at most this often, in ms, so
+# the end sensor and stall checks lose little time (#55).
+MQTT_MOVING_LOOP_MS = os.getenv("mqtt_moving_loop_ms", 1000)
+# Meanwhile the task checks this often whether loop() is due, as it may block
+# only right after some of the lift's samples: about as often as they come,
+# by default.
+MQTT_MOVING_SLEEP_S = 0.05
 
 # The watchdog's timeout. Every blocking step must fit inside it, the Wi-Fi
 # scan and connect at boot, which block back to back, included.
@@ -157,15 +165,24 @@ async def publish_uptime(mqtt, disc):
         await asyncio.sleep(10)
 
 
-async def service_mqtt(mqtt, blinds, loop_timeout):
+async def service_mqtt(mqtt, blinds, socket_timeout):
     """
-    Handle incoming MQTT messages while the blind is idle. loop() blocks the
-    asyncio loop, so it isn't called while the blind moves.
+    Handle incoming MQTT messages, while the blind opens or closes too, so
+    STOP works mid-travel. loop() takes the least timeout it allows,
+    socket_timeout, and blocks the asyncio loop for up to twice that. So
+    while the blind moves, it runs at most once every MQTT_MOVING_LOOP_MS,
+    and only when the lift's travel can take the pause: its turns still
+    counted, and its end sensor not due meanwhile.
     """
+    pause_ms = int(2 * socket_timeout * 1000)
+    pace = Pace(MQTT_MOVING_LOOP_MS)
     while True:
-        if not blinds.is_moving:
-            await mqtt.loop(loop_timeout)
-        await asyncio.sleep(MQTT_SERVICE_SLEEP_S)
+        moving = blinds.is_moving
+        t_ms = now_ms()
+        if pace.due(t_ms, moving, blinds.may_pause(pause_ms)):
+            pace.looped(t_ms)
+            await mqtt.loop(socket_timeout)
+        await asyncio.sleep(MQTT_MOVING_SLEEP_S if moving else MQTT_SERVICE_SLEEP_S)
 
 
 async def escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done):

@@ -70,7 +70,16 @@ mqtt_pwd = "your_mqtt_password"
 
 # Optional. The MQTT socket and loop() timeout, in seconds; default 0.25.
 # settings.toml takes no floats, so write 1, or quote a fraction: "0.5".
+# Each loop() call blocks for up to twice this. While the blind moves, it
+# listens only where such a block can't lose a turn of its travel: a longer
+# timeout leaves fewer such places, and at 1 none at full speed.
 # mqtt_socket_timeout = 1
+# Optional. While the blind opens or closes, it listens for commands such as
+# STOP at most this often, in milliseconds, as each listen holds up its end
+# sensor and stall checks for about 0.25-0.5 s; default 1000. It listens only
+# where the lift's turns can't go uncounted, and not within about a
+# revolution of the end sensor, by travel.
+# mqtt_moving_loop_ms = 1000
 # Optional. Rebuild the MQTT client after this many seconds of listening with
 # no echo of the blind's own uptime; default 45.
 # mqtt_echo_timeout = 45
