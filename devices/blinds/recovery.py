@@ -1,5 +1,6 @@
 """The last-resort recovery: when to restart the blind because its MQTT
-link has been unhealthy too long. Pure, so the host tests run it."""
+link has been unhealthy too long, and arming the watchdog. Pure, or given
+the watchdog, so the host tests run it."""
 
 # How long the liveness echo may be missing before the blind restarts, which
 # mqtt_escalation_s overrides.
@@ -48,3 +49,17 @@ class RestartLoop:
             return False
         self._failures += 1
         return self._failures >= self._max_failures
+
+
+def arm_watchdog(watchdog, timeout_s, mode):
+    """Arm the watchdog in mode with a timeout of timeout_s, and feed it.
+    Returns whether it armed it. One armed in mode already is only fed:
+    CircuitPython 9.1 raises espidf.IDFError "Invalid argument" at setting an
+    armed watchdog's timeout, which failed every later run of main() at once
+    (#103)."""
+    arming = watchdog.mode != mode
+    if arming:
+        watchdog.timeout = timeout_s
+        watchdog.mode = mode
+    watchdog.feed()
+    return arming
