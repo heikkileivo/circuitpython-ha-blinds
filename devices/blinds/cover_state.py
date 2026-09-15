@@ -20,7 +20,7 @@ TRAVEL_LIMIT = "travel limit reached"
 CRAWL_LIMIT = "crawl limit reached"
 TIMED_OUT = "timeout"
 # A STOP command ended it (#55).
-STOP_COMMAND = "STOP command"
+STOP_COMMAND = "stop command"
 START_FAILED = "failed to start"
 STOP_FAILED = "failed to stop"
 ERROR = "error"

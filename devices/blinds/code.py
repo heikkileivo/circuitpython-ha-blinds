@@ -40,7 +40,8 @@ MQTT_SERVICE_SLEEP_S = 0.25
 # the end sensor and stall checks lose little time (#55).
 MQTT_MOVING_LOOP_MS = os.getenv("mqtt_moving_loop_ms", 1000)
 # Meanwhile the task checks this often whether loop() is due, as it may block
-# only right after some of the lift's samples, one every 50 ms.
+# only right after some of the lift's samples: about as often as they come,
+# by default.
 MQTT_MOVING_SLEEP_S = 0.05
 
 # The watchdog's timeout. Every blocking step must fit inside it, the Wi-Fi
@@ -164,22 +165,23 @@ async def publish_uptime(mqtt, disc):
         await asyncio.sleep(10)
 
 
-async def service_mqtt(mqtt, blinds, loop_timeout, socket_timeout):
+async def service_mqtt(mqtt, blinds, socket_timeout):
     """
     Handle incoming MQTT messages, while the blind opens or closes too, so
-    STOP works mid-travel. loop() blocks the asyncio loop for its timeout, and
-    up to socket_timeout more. So while the blind moves, it runs at most once
-    every MQTT_MOVING_LOOP_MS, and only when the lift's travel can take the
-    pause: its turns still counted, and its end sensor not due meanwhile.
+    STOP works mid-travel. loop() takes the least timeout it allows,
+    socket_timeout, and blocks the asyncio loop for up to twice that. So
+    while the blind moves, it runs at most once every MQTT_MOVING_LOOP_MS,
+    and only when the lift's travel can take the pause: its turns still
+    counted, and its end sensor not due meanwhile.
     """
-    pause_ms = int((loop_timeout + socket_timeout) * 1000)
+    pause_ms = int(2 * socket_timeout * 1000)
     pace = Pace(MQTT_MOVING_LOOP_MS)
     while True:
         moving = blinds.is_moving
         t_ms = now_ms()
         if pace.due(t_ms, moving, blinds.may_pause(pause_ms)):
             pace.looped(t_ms)
-            await mqtt.loop(loop_timeout)
+            await mqtt.loop(socket_timeout)
         await asyncio.sleep(MQTT_MOVING_SLEEP_S if moving else MQTT_SERVICE_SLEEP_S)
 
 
@@ -448,7 +450,7 @@ async def run_blind(reader, end_sensors):
     # The supervisor owns connecting, and rebuilds the client when it drops.
     mqtt.start_supervisor()
 
-    tasks.append(asyncio.create_task(service_mqtt(mqtt, blinds, socket_timeout, socket_timeout)))
+    tasks.append(asyncio.create_task(service_mqtt(mqtt, blinds, socket_timeout)))
     tasks.append(asyncio.create_task(status_blinker(blinds)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
     tasks.append(asyncio.create_task(read_servos_while_idle(blinds, publish_servo_health)))

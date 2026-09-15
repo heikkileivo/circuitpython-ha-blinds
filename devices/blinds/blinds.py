@@ -332,10 +332,9 @@ class Blinds:
             self._revolutions = 0
             self._opened = 0
             self._tilt_move = None      # The tilt-only move's task, if one ran
-            # One open or close at a time, and STOP for it.
+            # One open or close at a time, STOP for it, and whether its drive
+            # under way lets asyncio block.
             self._control = MoveControl()
-            # The drive under way's check that asyncio may block, if one is.
-            self._pause_check = None
             # Set once a lift stop isn't confirmed. code.py then fails main().
             self.stop_failed = asyncio.Event()
 
@@ -429,7 +428,7 @@ class Blinds:
             """Whether asyncio may block for pause_ms now, as MQTT's loop()
             does, with the lift's turns still counted and its end sensor's
             stop on time. Always, unless a drive of the lift is under way."""
-            return self._pause_check is None or self._pause_check(pause_ms)
+            return self._control.may_pause(pause_ms)
 
         @property
         def move_figures(self):
@@ -509,7 +508,8 @@ class Blinds:
             as its tilt didn't arrive or the move ended meanwhile, leaves the
             stored state as it was: the blind hasn't moved. Unless its end
             sensor went active meanwhile, which stores that end, as when it's
-            active from the start."""
+            active from the start, or STOP ended it, which stores stopped, as
+            HA is told."""
             sensor = UP_SENSOR if end == Blinds.POSITION_UP else DOWN_SENSOR
             other_end = Blinds.POSITION_DOWN if end == Blinds.POSITION_UP else Blinds.POSITION_UP
             from_end = state == other_end
@@ -548,7 +548,7 @@ class Blinds:
                         tracker.anchor(end)
                 drive = plan.next(self._end_sensors.active(sensor), result)
             result = plan.result
-            if not any_started and result != cover_state.REACHED:
+            if not any_started and result not in (cover_state.REACHED, cover_state.STOP_COMMAND):
                 return result
             print(f"Travel {tracker.travel}, full travel {tracker.full_travel}.")
             self._save_state(cover_state.after_move(result, end))
@@ -606,19 +606,23 @@ class Blinds:
             sample_ms = os.getenv("lift_sample_ms", 50)
 
             def can_pause(pause_ms):
-                # A pause holds up the samples, and, once the drive has
-                # ended, its stop. The crawl down and the re-seat run within
-                # a turn or so of the end sensor, which the travel can't
-                # tell. The drive's speed is the fastest it drives.
-                return (not finish_event.is_set() and drive.revs is None
-                        and tracker.can_pause(speed, pause_ms + sample_ms))
+                # A pause holds up the drive's samples, and, once it has
+                # ended, its stop. Before the lift starts, nothing turns
+                # meanwhile. The crawl down and the re-seat run within a turn
+                # or so of the end sensor, which the travel can't tell. The
+                # drive's speed is the fastest it drives.
+                if finish_event.is_set():
+                    return False
+                if not lift_started:
+                    return True
+                return drive.revs is None and tracker.can_pause(speed, pause_ms + sample_ms)
 
             tasks = []
             wait_task = None
             try:
                 # STOP ends the drive from here on, at once if it has come
-                # already.
-                self._control.drive(lambda: finish(cover_state.STOP_COMMAND))
+                # already, and the drive decides whether asyncio may block.
+                self._control.drive(lambda: finish(cover_state.STOP_COMMAND), can_pause)
                 # The end sensor is watched from here on: a press that comes
                 # later, even before the lift starts, ends the drive. So does
                 # one active already, and the lift doesn't start.
@@ -637,8 +641,6 @@ class Blinds:
                     timeout = os.getenv("approach_timeout", 120)
                 print(f"Travel {tracker.travel} of {tracker.full_or_estimate} revolutions, driving at {speed}.")
                 slowed = speed == slow_speed
-                # From the drive's first sample on.
-                self._pause_check = can_pause
 
                 tasks.append(asyncio.create_task(
                     watch_end_sensor(self._end_sensors,
@@ -688,7 +690,6 @@ class Blinds:
                     wait_task.cancel()
                 # However the move ends, stop the lift.
                 stopped = await self._stop_lift()
-                self._pause_check = None
                 self._control.drive_ended()
 
             if not stopped:

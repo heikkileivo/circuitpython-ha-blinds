@@ -25,9 +25,10 @@ HIGH_START = 683
 # at the wrap, and is held. The measured jitter there is at most 9.
 BACK_TOLERANCE = 16
 
-# The servo angle reads up to this; the dead zone lies beyond it, up to the
-# wrap. An angle within DEAD_ZONE_EDGE counts of the readable end ahead may be
-# one the dead zone holds, anywhere up to the wrap.
+# The servo angle reads up to this. Through the dead zone, which starts about
+# here, it holds at about 1018-1022, then 0-1, until the wrap. So an angle
+# within DEAD_ZONE_EDGE counts of the readable end ahead may be a held one,
+# with the lift anywhere up to the wrap.
 READ_MAX = 1022
 DEAD_ZONE_EDGE = 10
 # A turn of the lift takes at least this long at duty 800, in ms, and 800 /
