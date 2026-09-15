@@ -20,13 +20,17 @@ host tests run it."""
 
 import cover_state
 
-# Starting values, in revolutions, which the re_seat_revs and crawl_down_revs
-# settings override. On the bench the up end sensor's window was about 0.85 s
-# at duty 800, roughly 1 rev, and a stop from duty 300 coasted about 40 counts
-# (#21). Stage 7 (#54) measures the gap between the up end sensor and the head
-# rail, and tunes them.
-RE_SEAT_REVS = 1.0
-CRAWL_DOWN_REVS = 1.0
+# In revolutions, which the re_seat_revs and crawl_down_revs settings
+# override. Tuned at stage 7's gate (#54) on Middle, whose up end sensor is
+# active over two zones: a lower one about 0.32 rev tall, then, after a gap of
+# about 0.05, an upper one that reaches the head rail, 0.40 above the lower
+# zone. A blind at the head rail reads the sensor active, so above the lower
+# zone it's inactive only in the gap. A stop from approach speed coasts about
+# 0.07 going up and 0.03 going down. Finding the sensor past the gap and a
+# coast needs a fraction of these, and a blind resting just below its up end
+# sensor crawls down and back no further than it must.
+RE_SEAT_REVS = 0.5
+CRAWL_DOWN_REVS = 0.5
 
 # The drives of an open or close.
 MOVE = "move"               # The move proper, toward the end.
