@@ -1,6 +1,6 @@
 """Host test 7: the lift's speed profile (#57), which replaces the two-step
 speed the moves drove at before: a soft start up to cruise, cruise, then a
-smoothstep down to the approach speed over the last K revolutions, and the
+smoothstep down to the approach speed over the last approach revolutions, and the
 approach speed from there until the end sensor stops the drive.
 
 The profile is a pure function of the revolutions the drive has turned and
@@ -15,12 +15,12 @@ from speed_profile import (MIN_SPEED, SOFT_START_REVS, SOFT_START_SPEED, UPDATE_
 
 CRUISE = 800
 APPROACH = 300
-K = 3
+APPROACH_REVS = 3
 STEP = 0.05
 
 
-def profile(cruise=CRUISE, approach=APPROACH, slowdown_revs=K, **kwargs):
-    return Profile(cruise, approach, slowdown_revs, **kwargs)
+def profile(cruise=CRUISE, approach=APPROACH, approach_revs=APPROACH_REVS, **kwargs):
+    return Profile(cruise, approach, approach_revs, **kwargs)
 
 
 def driving(prof, start_remaining, end_remaining=0.0, moved=0.0, step=STEP):
@@ -56,14 +56,14 @@ class SoftStartTest(unittest.TestCase):
         # It really ramps: halfway up it's between the two.
         self.assertTrue(SOFT_START_SPEED < duties[10] < CRUISE, duties[10])
 
-    def test_it_cruises_between_the_soft_start_and_the_slowdown(self):
-        self.assertEqual(profile().duty(SOFT_START_REVS, K + 1), CRUISE)
+    def test_it_cruises_between_the_soft_start_and_the_approach(self):
+        self.assertEqual(profile().duty(SOFT_START_REVS, APPROACH_REVS + 1), CRUISE)
         self.assertEqual(profile().duty(8.0, 10.0), CRUISE)
 
 
 class SlowdownTest(unittest.TestCase):
     def test_it_slows_from_cruise_to_the_approach_speed_over_the_last_revolutions(self):
-        duties = driving(profile(), K, moved=SOFT_START_REVS)
+        duties = driving(profile(), APPROACH_REVS, moved=SOFT_START_REVS)
 
         self.assertTrue(non_increasing(duties), duties)
         self.assertEqual(duties[0], CRUISE)
@@ -82,7 +82,7 @@ class SlowdownTest(unittest.TestCase):
         # pick up speed at first, but never more than the distance left
         # allows, and from there it only slows.
         duties = driving(profile(), 2.0)
-        allowed = [profile().duty(K, remaining) for remaining in
+        allowed = [profile().duty(APPROACH_REVS, remaining) for remaining in
                    [2.0 - i * STEP for i in range(len(duties))]]
 
         self.assertTrue(all(d <= a for d, a in zip(duties, allowed)), duties)
@@ -95,28 +95,28 @@ class ClampTest(unittest.TestCase):
     def test_it_never_drives_below_the_minimum_speed(self):
         # An approach speed under the minimum would stall the servo.
         prof = profile(approach=100)
-        duties = driving(prof, K + SOFT_START_REVS)
+        duties = driving(prof, APPROACH_REVS + SOFT_START_REVS)
 
         self.assertTrue(all(duty >= MIN_SPEED for duty in duties), duties)
         self.assertEqual(prof.duty(20.0, 0.0), MIN_SPEED)
 
     def test_it_never_drives_faster_than_cruise(self):
-        duties = driving(profile(cruise=400), K + SOFT_START_REVS)
+        duties = driving(profile(cruise=400), APPROACH_REVS + SOFT_START_REVS)
 
         self.assertTrue(all(duty <= 400 for duty in duties), duties)
 
     def test_the_duties_are_whole_numbers(self):
-        for duty in driving(profile(), K + SOFT_START_REVS):
+        for duty in driving(profile(), APPROACH_REVS + SOFT_START_REVS):
             self.assertIsInstance(duty, int)
 
 
 class DirectionTest(unittest.TestCase):
     def test_a_drive_up_mirrors_one_down(self):
-        up = Profile(-CRUISE, -APPROACH, K)
-        down = Profile(CRUISE, APPROACH, K)
+        up = Profile(-CRUISE, -APPROACH, APPROACH_REVS)
+        down = Profile(CRUISE, APPROACH, APPROACH_REVS)
 
         for moved in (0.0, 0.5, 2.0, 10.0):
-            for remaining in (20.0, K, 1.0, 0.0):
+            for remaining in (20.0, APPROACH_REVS, 1.0, 0.0):
                 with self.subTest(moved=moved, remaining=remaining):
                     self.assertEqual(up.duty(moved, remaining),
                                      -down.duty(moved, remaining))

@@ -781,7 +781,7 @@ class Blinds:
             result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward, whose end sensor stops it
                                 self._speed,                              # Drive in negative direction
                                 float(os.getenv("close_approach_revs",     # Ramp down to the approach speed over the last this many revolutions
-                                                speed_profile.SLOWDOWN_REVS)),
+                                                speed_profile.APPROACH_REVS)),
                                 os.getenv("close_timeout", 45),            # Timeout, with the travel known
                                 state)                                   # The cover state it starts from
             # A close that didn't reach the end sensor gives up here. A tilt
@@ -804,7 +804,7 @@ class Blinds:
             result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward, whose end sensor stops it
                                 -self._speed,                               # Drive in positive direction
                                 float(os.getenv("open_approach_revs",      # Ramp down to the approach speed over the last this many revolutions
-                                                speed_profile.SLOWDOWN_REVS)),
+                                                speed_profile.APPROACH_REVS)),
                                 os.getenv("open_timeout", 45),              # Timeout, with the travel known
                                 state)                                   # The cover state it starts from
             self._position = cover_state.after_move(result, Blinds.POSITION_UP)

@@ -39,11 +39,15 @@ One of the two reed switches (up and down) that a magnet in the blind closes at 
 _Avoid_: Limit switch, limit sensor, stop pin, reed, up pin, down pin
 
 **Speed profile**:
-What duty the lift drives at through a move, from the revolutions it has turned and the revolutions left to its end: a soft start up to the cruise speed, cruise, a ramp down to the approach speed over the last few revolutions, then the approach speed until the end sensor stops it.
-_Avoid_: Ramp, acceleration curve, speed curve
+What duty the lift drives at through a move, from the revolutions it has turned and the revolutions left to its end: a soft start up to the cruise speed, cruise, a ramp down to the approach speed over the last few revolutions, then the approach speed until the end sensor stops it. Each of those is a phase of the profile, and a ramp is the rise or fall between two of them.
+_Avoid_: Acceleration curve, speed curve
+
+**Cruise speed**:
+The duty a move drives at between its ramps, the fastest it goes: `default_speed`.
+_Avoid_: Full speed, top speed, default speed
 
 **Approach speed**:
-The slow duty a move ends at, which every crawl and re-seat drives at throughout.
+The slow duty a move ends at, which every crawl and re-seat drives at throughout. A move ramps down to it over its approach revolutions.
 _Avoid_: Creep speed, slow speed, final speed
 
 **Re-seat**:
