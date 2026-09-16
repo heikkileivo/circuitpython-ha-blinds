@@ -33,8 +33,11 @@ class StallDetector:
     speed about 0, for the stall window. A run that froze in the dead zone
     needs the dead-zone window instead, as the angle holds there while the
     servo still turns; frozen_angle, where the run froze, decides which.
-    After a duty command the servo gets a start-up grace, so one that never
-    starts is stalled once it's over."""
+    Starting the servo, or reversing it, gives it a start-up grace, so one
+    that never starts is stalled once the grace is over. The speed profile's
+    updates, which change the duty while the servo drives on, don't renew it:
+    they come faster than the grace, and would hold the stall stop off
+    through every ramp."""
 
     def __init__(self, window_ms=WINDOW_MS, max_speed=MAX_SPEED,
                  max_angle_change=MAX_ANGLE_CHANGE, grace_ms=GRACE_MS,
@@ -54,8 +57,10 @@ class StallDetector:
     def feed(self, t_ms, angle, speed, duty):
         """Take one sample. Returns True if the lift has stalled."""
         if duty != self._duty:
+            if self._duty is None or self._duty == 0 or (duty > 0) != (self._duty > 0):
+                # A start or a reversal, which the servo needs time for.
+                self._commanded_at = t_ms
             self._duty = duty
-            self._commanded_at = t_ms
         if duty == 0:
             # Not driving, so not stalled, however still it is.
             self._frozen_since = None

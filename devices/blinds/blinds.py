@@ -9,6 +9,7 @@ import lift_stop
 import persist
 import re_seat
 import servo_wait
+import speed_profile
 import stall
 import travel
 from time import monotonic_ns, sleep
@@ -40,6 +41,11 @@ class ServoCommFailure(ServoException):
     def __init__(self, message):
         super().__init__(message)
 
+def _encode_duty(value):
+    """The duty as GOAL_TIME takes it: its magnitude in bits 0-9, and the
+    direction in bit 10."""
+    return abs(value) | (1 << 10) if value < 0 else value
+
 class Servo:
     def __init__(self, id, reader, scale=1.0):
         self._id = id
@@ -69,26 +75,6 @@ class Servo:
         self._reader.set_position(self._id, pos)
 
 
-    async def ramp_speed_to(self, target, steps, interval):
-        speed = self.speed
-
-        diff = target - speed
-        step = int(diff/steps)
-        print(f"Ramping speed of {speed} to {target} by step of {step}...")
-        for i in range(steps):
-            speed += step
-
-            print(f"Speed ramp {i} = {speed}...")
-
-            try:
-                self.speed = speed
-            except ServoCommFailure as e:
-                print(f"Failed set servo speed: {e}")
-
-            await asyncio.sleep_ms(interval)
-
-        print(f"Completed ramping speed.")
-
     @property
     def speed(self):
         v = self._reader.get_time(self._id)
@@ -101,8 +87,7 @@ class Servo:
     @speed.setter
     def speed(self, value):
         self._duty = value
-        if value < 0:
-            value = abs(value) | (1<<10)
+        value = _encode_duty(value)
         retries = 3
         while True:
             self._reader.set_time(self._id, value)
@@ -116,6 +101,14 @@ class Servo:
                     retries -= 1
                 else:
                     raise ServoCommFailure(f"Failed to set servo speed to {value}.")
+
+    def set_duty(self, value):
+        """Write the duty without the read-back check the speed setter makes,
+        for the speed profile's updates during a drive (#57): the duty is
+        verified at the start and at the stop instead. Returns whether the
+        servo replied."""
+        self._duty = value
+        return self._reader.set_time(self._id, _encode_duty(value)) is not None
 
     @property
     def commanded_duty(self):
@@ -494,12 +487,14 @@ class Blinds:
             stopped past it re-seats: it crawls back onto it, at most
             re_seat_revs.
 
-            The move proper drives at speed, then at the approach speed
-            within approach_revs of the end by travel, or all the way with
-            the travel unknown. Every drive stops once the travel is
-            travel_margin_revs past the end. state is the cover state the
-            move starts from: from the other end, the move proper reaching
-            the end sensor learns the full travel.
+            The move proper follows the speed profile (speed_profile): a
+            soft start up to speed, then a ramp down to the approach speed
+            over the last approach_revs of its travel, and the approach speed
+            from there until the end sensor stops it. With the travel
+            unknown, it runs at the approach speed all the way. Every drive
+            stops once the travel is travel_margin_revs past the end. state
+            is the cover state the move starts from: from the other end, the
+            move proper reaching the end sensor learns the full travel.
 
             It stores the opening or closing just before the lift first
             starts, so a reset mid-move boots as an interrupted move, and the
@@ -561,11 +556,13 @@ class Blinds:
             started. Every exit, exceptions and cancellation included, ends
             with the lift's stop sequence.
 
-            The move proper drives at speed, then at the approach speed
-            within approach_revs of the end, and gives up after timeout s. A
-            crawl drives at the approach speed all the way. The crawl down
-            and the re-seat stop once they have turned drive.revs, and give
-            up after crawl_timeout s. The crawl up, like the move proper with
+            The move proper follows the speed profile, from a soft start up
+            to speed and down to the approach speed over the last
+            approach_revs, and gives up after timeout s. Its speed updates go
+            out without the read-back check; the start and the stop are
+            verified. A crawl drives at the approach speed all the way. The
+            crawl down and the re-seat stop once they have turned drive.revs,
+            and give up after crawl_timeout s. The crawl up, like the move proper with
             the travel unknown, gives up after approach_timeout s. Every
             drive stops at the travel limit, and at a stall. tilt_first is
             whether to turn the slats to 50 before the lift starts, with the
@@ -586,22 +583,24 @@ class Blinds:
 
             tracker = self._tracker
             lift_started = False
+            profile = None      # The speed profile, on every drive but a crawl
+            updates = None      # Its speed writes, once the lift has started
 
             def handle_sample():
-                nonlocal slowed
                 if drive.revs is not None and abs(tracker.moved) >= drive.revs:
                     print(f"Crawled {tracker.moved} revolutions without the end sensor, stopping...")
                     finish(cover_state.CRAWL_LIMIT)
                 elif tracker.beyond_limit(margin):
                     print(f"Travel {tracker.travel} is past its bound, stopping...")
                     finish(cover_state.TRAVEL_LIMIT)
-                elif lift_started and not slowed and tracker.approach_due(approach_revs):
-                    slowed = True
-                    print(f"Slowing down at travel {tracker.travel}...")
-                    try:
-                        self._lift_servo.speed = slow_speed
-                    except ServoCommFailure as e:
-                        print(f"Failed to slow servo down: {e}")
+                elif updates is not None:
+                    duty = profile.duty(abs(tracker.moved), tracker.remaining)
+                    if updates.due(now_ms(), duty):
+                        try:
+                            if not self._lift_servo.set_duty(duty):
+                                print(f"The lift servo didn't reply to the duty {duty}.")
+                        except Exception as e:
+                            print(f"Failed to update the lift's duty: {e!r}")
 
             sample_ms = os.getenv("lift_sample_ms", 50)
 
@@ -632,15 +631,24 @@ class Blinds:
                 # settings.toml takes no floats, so a fractional value must be quoted.
                 margin = float(os.getenv("travel_margin_revs", 2))
                 slow_speed = self._approach_speed(drive.up)
-                if drive.crawls or tracker.approach_due(approach_revs):
+                if drive.crawls:
                     speed = slow_speed
+                else:
+                    # The profile drives from a soft start up to speed and
+                    # back down to the approach speed over the last
+                    # approach_revs. speed stays the fastest it can drive,
+                    # which can_pause goes by.
+                    profile = speed_profile.Profile(
+                        speed, slow_speed, approach_revs,
+                        soft_start_revs=float(os.getenv("soft_start_revs", speed_profile.SOFT_START_REVS)),
+                        soft_start_speed=os.getenv("soft_start_speed", speed_profile.SOFT_START_SPEED),
+                        min_speed=os.getenv("lift_min_speed", speed_profile.MIN_SPEED))
                 if drive.revs is not None:
                     timeout = os.getenv("crawl_timeout", 15)
                 elif drive.crawls or math.isnan(tracker.travel):
                     # All the way at approach speed takes longer.
                     timeout = os.getenv("approach_timeout", 120)
                 print(f"Travel {tracker.travel} of {tracker.full_or_estimate} revolutions, driving at {speed}.")
-                slowed = speed == slow_speed
 
                 tasks.append(asyncio.create_task(
                     watch_end_sensor(self._end_sensors,
@@ -671,13 +679,20 @@ class Blinds:
                     print("Starting lift servo...")
                     self._lift_servo.enable_torque = True
 
-                    print(f"Ramping servo speed up to {speed}...")
+                    start_duty = speed if profile is None else profile.duty(0.0, tracker.remaining)
+                    print(f"Starting the lift at duty {start_duty}...")
 
-                    if not await self._lift_servo.start(speed):
+                    if not await self._lift_servo.start(start_duty):
                         print("Failed to start lift servo.")
                         finish(cover_state.START_FAILED)
                     else:
                         print("Lift servo started, waiting for completion...")
+                        if profile is not None:
+                            # The profile's updates run from the start's duty,
+                            # which the servo confirmed.
+                            updates = speed_profile.Updates(
+                                start_duty, now_ms(),
+                                update_ms=os.getenv("speed_update_ms", speed_profile.UPDATE_MS))
 
                 # Every task ends once finish_event is set.
                 await asyncio.gather(*tasks)
@@ -765,7 +780,8 @@ class Blinds:
             self.report_state()
             result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward, whose end sensor stops it
                                 self._speed,                              # Drive in negative direction
-                                os.getenv("close_approach_revs", 10),       # Approach within this many revolutions of the end
+                                float(os.getenv("close_approach_revs",     # Ramp down to the approach speed over the last this many revolutions
+                                                speed_profile.APPROACH_REVS)),
                                 os.getenv("close_timeout", 45),            # Timeout, with the travel known
                                 state)                                   # The cover state it starts from
             # A close that didn't reach the end sensor gives up here. A tilt
@@ -787,7 +803,8 @@ class Blinds:
             self.report_state()
             result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward, whose end sensor stops it
                                 -self._speed,                               # Drive in positive direction
-                                os.getenv("open_approach_revs", 7),         # Approach within this many revolutions of the end
+                                float(os.getenv("open_approach_revs",      # Ramp down to the approach speed over the last this many revolutions
+                                                speed_profile.APPROACH_REVS)),
                                 os.getenv("open_timeout", 45),              # Timeout, with the travel known
                                 state)                                   # The cover state it starts from
             self._position = cover_state.after_move(result, Blinds.POSITION_UP)
