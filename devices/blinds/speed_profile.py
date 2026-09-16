@@ -25,11 +25,13 @@ the travel (#50).
 
 import math
 
-# The settings.toml keys of the same names override these. Stage 9's gate
-# (#58) kept the starting values: on Middle, with the approach speeds at 500
-# up and 300 down, every drive ramped down to its approach speed by the end
-# sensor with no re-seat or stall. Full travel took 30.0 s up and 22.8 s down
-# at 3 revolutions, against 30.4 s and 25.6 s at 5. The baseline medians
+# The settings.toml keys of the same names override these defaults, which
+# stage 9's gate (#58) kept. On Middle, with the approach speeds at 500 up
+# and 300 down, a drive with its full travel learned ramped down to its
+# approach speed by the end sensor, with no re-seat or stall. A stale full
+# travel ends the ramp early: the one close that re-learned it, 1.05
+# revolutions short, met the sensor at 358. Full travel took 30.0 s up and
+# 22.8 s down at 3 revolutions, against 30.4 s up at 5; the baseline medians
 # (#48) are 30.8 s and 27.1 s.
 SOFT_START_SPEED = 300
 SOFT_START_REVS = 1.0
