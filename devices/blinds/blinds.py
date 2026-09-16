@@ -640,9 +640,9 @@ class Blinds:
                     # which can_pause goes by.
                     profile = speed_profile.Profile(
                         speed, slow_speed, approach_revs,
-                        float(os.getenv("soft_start_revs", speed_profile.SOFT_START_REVS)),
-                        os.getenv("soft_start_speed", speed_profile.SOFT_START_SPEED),
-                        os.getenv("lift_min_speed", speed_profile.MIN_SPEED))
+                        soft_start_revs=float(os.getenv("soft_start_revs", speed_profile.SOFT_START_REVS)),
+                        soft_start_speed=os.getenv("soft_start_speed", speed_profile.SOFT_START_SPEED),
+                        min_speed=os.getenv("lift_min_speed", speed_profile.MIN_SPEED))
                 if drive.revs is not None:
                     timeout = os.getenv("crawl_timeout", 15)
                 elif drive.crawls or math.isnan(tracker.travel):
@@ -692,7 +692,7 @@ class Blinds:
                             # which the servo confirmed.
                             updates = speed_profile.Updates(
                                 start_duty, now_ms(),
-                                os.getenv("speed_update_ms", speed_profile.UPDATE_MS))
+                                update_ms=os.getenv("speed_update_ms", speed_profile.UPDATE_MS))
 
                 # Every task ends once finish_event is set.
                 await asyncio.gather(*tasks)
