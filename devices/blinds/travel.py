@@ -162,11 +162,6 @@ class Tracker:
             return self.full_or_estimate - self.travel
         return self.travel
 
-    def approach_due(self, approach_revs):
-        """Whether the move is within approach_revs of its end, so runs at
-        approach speed. With the travel unknown, it always is."""
-        return not self.remaining > approach_revs
-
     def beyond_limit(self, margin):
         """Whether the move has gone margin revolutions past its end: above
         full travel opening, below the bottom closing. With the travel

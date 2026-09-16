@@ -381,48 +381,40 @@ class LearnFullTravelTest(unittest.TestCase):
                 self.assertEqual(tracker.full_travel, FULL)
 
 
-class ApproachTest(unittest.TestCase):
-    def test_opening_slows_down_within_approach_revs_of_full_travel(self):
+class RemainingTest(unittest.TestCase):
+    """What's left to the move's end, which the speed profile drives by."""
+
+    def test_opening_counts_down_to_full_travel(self):
         tracker = Tracker(20.0, FULL, ESTIMATE)
         tracker.begin(True, False)
-        self.assertFalse(tracker.approach_due(5))
+        self.assertAlmostEqual(tracker.remaining, FULL - 20.0)
 
-        move(tracker, 20.0, 22.4)
-        self.assertFalse(tracker.approach_due(5))
-        move(tracker, 22.4, 22.6)
-        self.assertTrue(tracker.approach_due(5))
+        move(tracker, 20.0, 22.5)
+        self.assertAlmostEqual(tracker.remaining, FULL - 22.5, places=1)
 
-    def test_closing_slows_down_within_approach_revs_of_the_bottom(self):
+    def test_closing_counts_down_to_the_bottom(self):
         tracker = Tracker(8.0, FULL, ESTIMATE)
+        tracker.begin(False, False)
+        self.assertAlmostEqual(tracker.remaining, 8.0)
 
-        move(tracker, 8.0, 5.1)
-        self.assertFalse(tracker.approach_due(5))
-        move(tracker, 5.1, 4.9)
-        self.assertTrue(tracker.approach_due(5))
+        move(tracker, 8.0, 5.0)
+        self.assertAlmostEqual(tracker.remaining, 5.0, places=1)
 
     def test_the_estimate_stands_in_until_full_travel_is_learned(self):
         tracker = Tracker(20.0, NAN, ESTIMATE)
-
-        move(tracker, 20.0, ESTIMATE - 5.1)
-        self.assertFalse(tracker.approach_due(5))
-        move(tracker, ESTIMATE - 5.1, ESTIMATE - 4.9)
-        self.assertTrue(tracker.approach_due(5))
-
-    def test_a_move_near_its_end_starts_at_approach_speed(self):
-        tracker = Tracker(FULL - 1, FULL, ESTIMATE)
-
         tracker.begin(True, False)
-        self.assertTrue(tracker.approach_due(5))
 
-    def test_with_unknown_travel_the_whole_move_is_at_approach_speed(self):
+        self.assertAlmostEqual(tracker.remaining, ESTIMATE - 20.0)
+
+    def test_with_the_travel_unknown_nothing_is_left_to_go_by(self):
         for opening in (True, False):
             with self.subTest(opening=opening):
                 tracker = Tracker(NAN, FULL, ESTIMATE)
                 tracker.begin(opening, False)
-                self.assertTrue(tracker.approach_due(5))
+                self.assertTrue(math.isnan(tracker.remaining))
 
                 move(tracker, 10.0, 20.0 if opening else 0.0)
-                self.assertTrue(tracker.approach_due(5))
+                self.assertTrue(math.isnan(tracker.remaining))
 
 
 class TravelBoundTest(unittest.TestCase):
