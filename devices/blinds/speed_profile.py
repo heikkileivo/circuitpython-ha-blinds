@@ -25,8 +25,12 @@ the travel (#50).
 
 import math
 
-# Starting values, which the settings.toml keys of the same names override,
-# tuned at stage 9's gate (#58).
+# The settings.toml keys of the same names override these. Stage 9's gate
+# (#58) kept the starting values: on Middle, with the approach speeds at 500
+# up and 300 down, every drive ramped down to its approach speed by the end
+# sensor with no re-seat or stall. Full travel took 30.0 s up and 22.8 s down
+# at 3 revolutions, against 30.4 s and 25.6 s at 5. The baseline medians
+# (#48) are 30.8 s and 27.1 s.
 SOFT_START_SPEED = 300
 SOFT_START_REVS = 1.0
 # The slowest the servo drives without stalling.

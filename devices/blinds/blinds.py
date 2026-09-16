@@ -718,7 +718,7 @@ class Blinds:
             """The approach speed, as the duty for a drive up (negative) or
             down."""
             if up:
-                return -os.getenv("open_approach_speed", 300)
+                return -os.getenv("open_approach_speed", 500)
             return os.getenv("close_approach_speed", 300)
 
         async def _stop_lift(self):
