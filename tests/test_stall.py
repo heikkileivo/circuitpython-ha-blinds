@@ -147,6 +147,20 @@ class StallDetectorTest(unittest.TestCase):
 
         self.assertEqual(first_stall(samples), (300, 300))
 
+    def test_the_speed_profiles_updates_dont_hold_the_stall_stop_off(self):
+        # They come every 100 ms, under the 300 ms grace, so renewing it on
+        # each would leave a ramp with no stall stop at all.
+        samples = [(t, angle, speed, duty - t // 100)
+                   for t, angle, speed, duty in head_rail()]
+
+        self.assertEqual(first_stall(samples), (1300, 200))
+
+    def test_a_reversal_gives_the_servo_its_grace_again(self):
+        # It has to stop and start the other way.
+        samples = turning(-800, 1200, 683, 0, 1000) + stalled(800, 0, 1000, 2000)
+
+        self.assertEqual(first_stall(samples), (1300, 300))
+
     def test_a_servo_at_duty_0_is_never_stalled(self):
         # Braking, still, before and after a move.
         self.assertIsNone(first_stall(stalled(0, 683, 0, 2000)))
