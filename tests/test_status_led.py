@@ -7,15 +7,13 @@ import unittest
 
 import cover_state
 import servo_health
-import status_led
 from color import Color
-from status_led import BLINK, DIM, FULL, SOLID, decision
+from cover_state import SETTLED
+from status_led import BLINK, BLINK_S, DIM, FULL, SOLID, decision
 
-SETTLED = (cover_state.UP, cover_state.DOWN, cover_state.STOPPED)
 
-
-class RowsTest(unittest.TestCase):
-    def test_servo_trouble_blinks_red(self):
+class EachRowTest(unittest.TestCase):
+    def test_servo_health_no_reply_or_error_blinks_red(self):
         for health in (servo_health.NO_REPLY, servo_health.ERROR):
             with self.subTest(health=health):
                 self.assertEqual(decision(health, True, cover_state.UP, False),
@@ -44,7 +42,7 @@ class RowsTest(unittest.TestCase):
 
 
 class PrioritiesTest(unittest.TestCase):
-    def test_servo_trouble_beats_mqtt_disconnected_and_an_unknown_cover_state(self):
+    def test_servo_health_beats_mqtt_disconnected_and_an_unknown_cover_state(self):
         for connected in (True, False):
             for state in (cover_state.UP, cover_state.UNKNOWN):
                 with self.subTest(connected=connected, state=state):
@@ -66,12 +64,12 @@ class PrioritiesTest(unittest.TestCase):
 
 
 class BrightnessTest(unittest.TestCase):
-    def test_dim_is_in_the_agreed_range_and_full_is_todays(self):
+    def test_dim_is_in_the_agreed_range_and_full_is_boots_brightness(self):
         self.assertTrue(0.03 <= DIM <= 0.05)
         self.assertEqual(FULL, 0.3)
 
     def test_the_slow_blink_is_about_a_second_each_way(self):
-        self.assertEqual(status_led.BLINK_S, 1)
+        self.assertEqual(BLINK_S, 1)
 
 
 if __name__ == "__main__":

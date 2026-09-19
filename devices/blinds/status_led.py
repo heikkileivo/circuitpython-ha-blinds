@@ -26,8 +26,8 @@ def decision(health, mqtt_connected, state, in_move):
     """What the LED shows, as (colour, SOLID or BLINK, brightness), from the
     servo health, whether MQTT is connected, the cover state, as the
     cover_state values, and whether a move, a tilt-only one included, is
-    under way. An attention condition beats a move: servo trouble first,
-    then MQTT disconnected, then an unknown cover state."""
+    under way. An attention condition beats a move: servo health no reply
+    or error first, then MQTT disconnected, then an unknown cover state."""
     if health != servo_health.OK:
         return Color.RED, BLINK, FULL
     if not mqtt_connected:

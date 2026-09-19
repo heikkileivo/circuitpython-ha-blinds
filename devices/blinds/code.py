@@ -217,19 +217,23 @@ async def escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done
         await asyncio.sleep(WATCHDOG_FEED_S)
 
 
-async def show_status(blinds, mqtt, health):
+async def show_status(blinds, mqtt, current_health):
     """
     Show the blind's status on the LED, as status_led.decision() works it
     out: dim and solid while all is well, a slow blink on an attention
     condition. Once the main loop runs, this is the pixel's only writer.
-    health returns the servo health the blind last worked out.
+    current_health returns the servo health the blind last worked out.
     """
     shown = None
+    last = None
     lit = False
     while True:
-        color, mode, brightness = status_led.decision(
-            health(), mqtt.on_connected.is_set(), blinds.position, blinds.in_move)
-        lit = not lit if mode == status_led.BLINK else True
+        decided = status_led.decision(
+            current_health(), mqtt.on_connected.is_set(), blinds.position, blinds.in_move)
+        color, mode, brightness = decided
+        # A new condition shows at once; the same blink alternates.
+        lit = not lit if decided == last and mode == status_led.BLINK else True
+        last = decided
         wanted = (color if lit else Color.BLACK, brightness)
         if wanted != shown:
             shown = wanted
