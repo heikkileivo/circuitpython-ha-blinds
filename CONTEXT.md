@@ -70,6 +70,10 @@ _Avoid_: Jam, stuck, blocked
 Whether a blind's servos answer and report no error, as published to Home Assistant: ok, no reply or error, taken as the worse of the lift and tilt servos.
 _Avoid_: Servo status, servo fault, servo diagnostics (the voltage, temperature and load figures behind it)
 
+**Attention**:
+A condition that makes a blind's status LED blink: servo health no reply or error, MQTT disconnected, or cover state unknown. When several hold, the most severe one shows, in that order.
+_Avoid_: Trouble, fault, alarm
+
 **Onboarding**:
 Setting up a new servo for its role in a blind, lift or tilt, as named by the operator: writing its ID, baud rate and angle limits while it's the only servo on the bus. Until it's onboarded, the blind can't talk to it, so nothing can stop it.
 _Avoid_: Commissioning, provisioning, servo setup, pairing
