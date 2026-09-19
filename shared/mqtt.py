@@ -4,7 +4,6 @@ import os, time
 import asyncio
 import adafruit_connection_manager
 from bounded_mqtt import BoundedMQTT
-from blink import blink, Color
 
 # A loop(T) call lasts T to T + socket_timeout. One that takes longer than
 # that by more than this, in seconds, is logged as SLOW LOOP.
@@ -158,13 +157,13 @@ class Mqtt:
         on_message_cb = self._on_message_callback
         echo_topic = self._echo_topic
 
-        # Callbacks are purely reactive: they update state, do not loop.
+        # Callbacks are purely reactive: they update state, do not loop,
+        # and leave the LED alone (#116).
         def _connected(client, userdata, flags, rc):
             print("MQTT: connected")
             self.reconnects += 1
             self.on_disconnected.clear()
             self.on_connected.set()
-            asyncio.create_task(blink(Color.GREEN, 3))
             # Defer the heavy on_connect work (discovery publish + subscribe).
             # Running it here, inside connect()'s CONNACK handler, lets a slow or
             # failed publish/subscribe abort the connect and loop forever.
@@ -174,7 +173,6 @@ class Mqtt:
             print("MQTT: disconnected (cb)")
             self.on_connected.clear()
             self.on_disconnected.set()
-            asyncio.create_task(blink(Color.ORANGE, 5))
 
         def _message(client, topic, message):
             if topic == echo_topic:
@@ -182,7 +180,6 @@ class Mqtt:
                 self.last_echo = time.monotonic()
                 return
             print(f"MQTT: message on {topic}: {message}")
-            asyncio.create_task(blink(Color.GREEN, 2))
             if on_message_cb:
                 on_message_cb(client, topic, message)
 

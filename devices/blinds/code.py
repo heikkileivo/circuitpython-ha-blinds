@@ -14,6 +14,7 @@ from end_sensors import EndSensors
 from packet import Reader
 from components import blinds_discovery
 import servo_health
+import status_led
 import reset_cause
 import recovery
 from blink import blink, Color, pixel
@@ -216,21 +217,30 @@ async def escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done
         await asyncio.sleep(WATCHDOG_FEED_S)
 
 
-async def status_blinker(blinds):
-    colors = { Blinds.POSITION_DOWN: Color.BLUE,
-                  Blinds.POSITION_UP: Color.YELLOW,
-                  Blinds.POSITION_MOVING_DOWN: Color.BLUE,
-                  Blinds.POSITION_MOVING_UP: Color.YELLOW,
-                  Blinds.POSITION_STOPPED: Color.CYAN,
-                  Blinds.POSITION_UNKNOWN: Color.ORANGE}
+async def show_status(blinds, mqtt, current_health):
+    """
+    Show the blind's status on the LED, as status_led.decision() works it
+    out: dim and solid while all is well, a slow blink on an attention
+    condition. Once the main loop runs, this is the pixel's only writer.
+    current_health returns the servo health the blind last worked out.
+    """
+    shown = None
+    last = None
+    lit = False
     while True:
-        color = colors[blinds.position]
-        pixel[0] = color
-        await blink(color, 2, interval=0.15)
-        if blinds.is_moving:
-            await asyncio.sleep(0.25)
-        else:
-            await asyncio.sleep(1)
+        decided = status_led.decision(
+            current_health(), mqtt.on_connected.is_set(), blinds.position, blinds.in_move)
+        color, mode, brightness = decided
+        # A new condition shows at once; the same blink alternates.
+        lit = not lit if decided == last and mode == status_led.BLINK else True
+        last = decided
+        wanted = (color if lit else Color.BLACK, brightness)
+        if wanted != shown:
+            shown = wanted
+            pixel.brightness = brightness
+            pixel[0] = wanted[0]
+        await asyncio.sleep(status_led.BLINK_S)
+
 
 async def read_servos_while_idle(blinds, publish_servo_health):
     """Read and publish the servos' health every SERVO_IDLE_READ_S while
@@ -290,13 +300,19 @@ async def run_blind(reader, end_sensors):
     # published once connected.
     reader.flush_buffer()
 
-    def health_json(*figures):
-        return json.dumps(servo_health.health_message(*figures), separators=(",", ":"))
-
     # The latest servo_health message and servo_min_voltage, which every
     # connect republishes. Until the first move there's only the boot read.
-    servo_states = {"servo_health": health_json(*servo_health.boot_reinit(reader)),
-                    "servo_min_voltage": None}
+    servo_states = {"servo_health": None, "servo_min_voltage": None}
+    # The latest servo health, ok, no_reply or error, for the status LED.
+    health = None
+
+    def update_servo_health(*figures):
+        nonlocal health
+        message = servo_health.health_message(*figures)
+        health = message["health"]
+        servo_states["servo_health"] = json.dumps(message, separators=(",", ":"))
+
+    update_servo_health(*servo_health.boot_reinit(reader))
     print(f"Servo health: {servo_states['servo_health']}")
 
     output_mem()
@@ -396,7 +412,7 @@ async def run_blind(reader, end_sensors):
         # Read both servos idle, and publish their health with the last
         # move's figures.
         lift_read, tilt_read = servo_health.idle_reads(reader, lift_stop_confirmed)
-        servo_states["servo_health"] = health_json(lift_read, tilt_read, *last_moves)
+        update_servo_health(lift_read, tilt_read, *last_moves)
         publish_if_connected(mqtt, disc.topic("servo_health", "state"),
                              servo_states["servo_health"], retain=True)
 
@@ -441,6 +457,8 @@ async def run_blind(reader, end_sensors):
     escalation = recovery.Escalation(now_ms(), ESCALATION_S * 1000)
     tasks = [asyncio.create_task(
         escalate_and_feed_watchdog(mqtt, blinds, escalation, boot_connect_done))]
+    # A failed run's status LED may have left the pixel dim.
+    pixel.brightness = status_led.FULL
     await blink(Color.BLUE, 3)
     await connect_wifi()
     boot_connect_done.set()
@@ -449,7 +467,7 @@ async def run_blind(reader, end_sensors):
     mqtt.start_supervisor()
 
     tasks.append(asyncio.create_task(service_mqtt(mqtt, blinds, socket_timeout)))
-    tasks.append(asyncio.create_task(status_blinker(blinds)))
+    tasks.append(asyncio.create_task(show_status(blinds, mqtt, lambda: health)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
     tasks.append(asyncio.create_task(read_servos_while_idle(blinds, publish_servo_health)))
     tasks.append(asyncio.create_task(fail_on_unconfirmed_stop()))
