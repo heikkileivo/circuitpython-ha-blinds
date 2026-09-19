@@ -21,6 +21,25 @@ CHIP_REASONS = ("POWER_ON", "BROWNOUT", "SOFTWARE", "DEEP_SLEEP_ALARM", "RESET_P
                 "WATCHDOG", "UNKNOWN", "RESCUE_DEBUG")
 
 
+# The codes at offset 1, as decided in #13 and #41, then one per safe-mode
+# reason (#104). A stored code outlives a deploy, so none may change.
+SAFE_MODE_CAUSES = {6: "safe_mode_flash_write_fail", 7: "safe_mode_gc_alloc_outside_vm",
+                    8: "safe_mode_hard_fault", 9: "safe_mode_interrupt_error",
+                    10: "safe_mode_nlr_jump_fail", 11: "safe_mode_no_heap",
+                    12: "safe_mode_programmatic", 13: "safe_mode_sdk_fatal_error",
+                    14: "safe_mode_stack_overflow", 15: "safe_mode_watchdog"}
+STORED_CAUSES = {1: "brownout", 2: "other_safe_mode", 3: "mqtt_escalation",
+                 4: "restart_loop", 5: "watchdog", **SAFE_MODE_CAUSES}
+
+
+@contextlib.contextmanager
+def fake_microcontroller(nvm):
+    """microcontroller with nvm as its NVM. Yields its reset(), a mock."""
+    fake = types.SimpleNamespace(nvm=nvm, reset=mock.Mock())
+    with mock.patch.dict(sys.modules, microcontroller=fake):
+        yield fake.reset
+
+
 def boot(nvm, chip_reason):
     """One boot as code.py runs it: decide, write what the decision says to
     NVM, and return the cause to publish and whether to restart."""
@@ -74,26 +93,13 @@ class ChipReasonTest(unittest.TestCase):
                               + list(SAFE_MODE_CAUSES.values()))
 
 
-# The codes at offset 1, as decided in #13 and #41, then one per safe-mode
-# reason (#104). A stored code outlives a deploy, so none may change.
-SAFE_MODE_CAUSES = {6: "safe_mode_flash_write_fail", 7: "safe_mode_gc_alloc_outside_vm",
-                    8: "safe_mode_hard_fault", 9: "safe_mode_interrupt_error",
-                    10: "safe_mode_nlr_jump_fail", 11: "safe_mode_no_heap",
-                    12: "safe_mode_programmatic", 13: "safe_mode_sdk_fatal_error",
-                    14: "safe_mode_stack_overflow", 15: "safe_mode_watchdog"}
-STORED_CAUSES = {1: "brownout", 2: "other_safe_mode", 3: "mqtt_escalation",
-                 4: "restart_loop", 5: "watchdog", **SAFE_MODE_CAUSES}
-
-
-@contextlib.contextmanager
-def fake_microcontroller(nvm):
-    """microcontroller with nvm as its NVM. Yields its reset(), a mock."""
-    fake = types.SimpleNamespace(nvm=nvm, reset=mock.Mock())
-    with mock.patch.dict(sys.modules, microcontroller=fake):
-        yield fake.reset
-
-
 class StoredCauseTest(unittest.TestCase):
+    def test_each_safe_mode_code_is_unique_and_clear_of_the_others(self):
+        codes = list(reset_cause.SAFE_MODE_CAUSES.values())
+
+        self.assertEqual(len(set(codes)), len(codes))
+        self.assertTrue(set(codes).isdisjoint({1, 2, 3, 4, 5}))
+
     def test_each_stored_cause_is_published_and_cleared(self):
         for code, cause in STORED_CAUSES.items():
             with self.subTest(cause=cause):

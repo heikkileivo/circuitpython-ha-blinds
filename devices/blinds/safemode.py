@@ -28,10 +28,10 @@ WAIT_S = 30
 
 # Every member of supervisor.SafeModeReason in CircuitPython 9.1.1
 # (shared-bindings/supervisor/SafeModeReason.c).
-_REASONS = ("NONE", "BROWNOUT", "FLASH_WRITE_FAIL", "GC_ALLOC_OUTSIDE_VM", "HARD_FAULT",
-            "INTERRUPT_ERROR", "NLR_JUMP_FAIL", "NO_CIRCUITPY", "NO_HEAP", "PROGRAMMATIC",
-            "SDK_FATAL_ERROR", "STACK_OVERFLOW", "USB_BOOT_DEVICE_NOT_INTERFACE_ZERO",
-            "USB_TOO_MANY_ENDPOINTS", "USB_TOO_MANY_INTERFACE_NAMES", "USER", "WATCHDOG")
+REASONS = ("NONE", "BROWNOUT", "FLASH_WRITE_FAIL", "GC_ALLOC_OUTSIDE_VM", "HARD_FAULT",
+           "INTERRUPT_ERROR", "NLR_JUMP_FAIL", "NO_CIRCUITPY", "NO_HEAP", "PROGRAMMATIC",
+           "SDK_FATAL_ERROR", "STACK_OVERFLOW", "USB_BOOT_DEVICE_NOT_INTERFACE_ZERO",
+           "USB_TOO_MANY_ENDPOINTS", "USB_TOO_MANY_INTERFACE_NAMES", "USER", "WATCHDOG")
 
 
 def decision(reason):
@@ -41,7 +41,7 @@ def decision(reason):
     the reason, so the next boot publishes why."""
     if reason == "BROWNOUT":
         return True, reset_cause.BROWNOUT, WAIT_S
-    return True, reset_cause.SAFE_MODE.get(reason, reset_cause.OTHER_SAFE_MODE), WAIT_S
+    return True, reset_cause.SAFE_MODE_CAUSES.get(reason, reset_cause.OTHER_SAFE_MODE), WAIT_S
 
 
 def recover():
@@ -68,7 +68,7 @@ def _reason():
     each member, so it doesn't rely on how an enum value prints."""
     import supervisor
     reason = supervisor.runtime.safe_mode_reason
-    for name in _REASONS:
+    for name in REASONS:
         if getattr(supervisor.SafeModeReason, name, None) == reason:
             return name
     return "UNKNOWN"

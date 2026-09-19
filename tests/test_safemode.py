@@ -12,7 +12,7 @@ import unittest
 
 from packet import Address, Reader
 from reset_cause import OPTIONS, boot_decision, record
-from safemode import _REASONS, STOP_LIFT, decision
+from safemode import REASONS, STOP_LIFT, decision
 from servo_health import LIFT_ID
 from tests.test_packet import FakeUart
 
@@ -46,7 +46,7 @@ class DecisionTest(unittest.TestCase):
                 self.assertEqual(recovery(reason), (True, "other_safe_mode", 30))
 
     def test_every_cause_is_an_option_of_the_entity(self):
-        for reason in _REASONS + ("UNKNOWN",):
+        for reason in REASONS + ("UNKNOWN",):
             with self.subTest(reason=reason):
                 self.assertIn(recovery(reason)[1], OPTIONS)
 
