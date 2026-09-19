@@ -154,13 +154,15 @@ class FakeServo:
     write to either takes effect at once. The EEPROM, below TORQUE_ENABLE,
     has a copy that survives power_cycle(): a write there reaches it only
     while LOCK is 0, and never at a volatile address. LOCK is SRAM, and
-    powers up as lock.
+    powers up as lock. After each write there, a servo that's busy for n
+    requests gives them no reply, as while it writes its flash.
     """
 
     def __init__(self, scs_id, duty=0, torque=0, voltage=85, temperature=21,
                  status=0, error=0, ignored_writes=0, missed_pings=0,
                  answers=True, refuses=(), baud_code=2, angle_limits=(0, 0),
-                 registers=(3, 25, 1, 9, 15), lock=0, volatile=(), garbles=False):
+                 registers=(3, 25, 1, 9, 15), lock=0, volatile=(), garbles=False,
+                 busy_after_eeprom_write=0):
         self.memory = bytearray(Address.PRESENT_CURRENT_H + 1)
         self.memory[0:5] = bytes(registers)
         self.memory[Address.ID] = scs_id
@@ -185,6 +187,8 @@ class FakeServo:
         self.answers = answers
         self.refuses = refuses
         self.garbles = garbles
+        self.busy_after_eeprom_write = busy_after_eeprom_write
+        self.busy = 0
 
     @property
     def id(self):
@@ -215,6 +219,8 @@ class FakeServo:
     def write(self, address, data):
         """A WRITE's bytes, stored as the servo stores them."""
         self.memory[address:address + len(data)] = data
+        if address < len(self.eeprom):
+            self.busy = self.busy_after_eeprom_write
         if self.lock == 0:
             for a in range(address, min(address + len(data), len(self.eeprom))):
                 if a not in self.volatile:
@@ -257,6 +263,9 @@ class FakeBus:
         if not servos:
             return
         servo = servos[0]
+        if servo.busy:
+            servo.busy -= 1
+            return
         if instruction == Instruction.PING and servo.missed_pings:
             servo.missed_pings -= 1
             return

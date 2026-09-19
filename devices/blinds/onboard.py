@@ -15,15 +15,20 @@ tests run them on a fake servo bus.
 """
 
 import json
+import math
+import time
 
-from packet import Address, Reader
+import cover_state
+from packet import EEPROM_TIMEOUT_S, Address, Reader
 import persist
 import servo_bus
+from servo_health import first_reply
 
 MARKER = "ONBOARD "
 
 # Feetech's baud rates, by the code at the baud rate register: 0 is 1 Mbps,
-# which a factory servo starts at.
+# which a factory servo starts at. The scan tries them all before it knows
+# the series, so it takes them from here, not from a series' table.
 BAUD_RATES = (1000000, 500000, 250000, 128000, 115200, 76800, 57600, 38400)
 
 # Every ID a servo can have: 254 is the broadcast ID.
@@ -85,6 +90,8 @@ class Onboarding:
         self._reader = Reader(uart, log=False)
         self._store = store
         self._out = out
+        # The found servo's ID, once a scan found it.
+        self._id = None
 
     def onboard(self, role):
         """Set up the one servo on the bus for role, "lift" or "tilt": scan
@@ -118,10 +125,10 @@ class Onboarding:
             return self._mark("role", False, role=role)
         role_id, limits = ROLES[role]
         found, garbled = self._scan()
-        self._uart.baudrate = servo_bus.BAUD_RATE
         read = None
         if found == [{"baud_rate": servo_bus.BAUD_RATE, "id": role_id}] and not garbled:
-            read = self._read_limits(role_id, self._table(role_id)[2])
+            _, _, table = self._read_series(role_id)
+            read = self._read_limits(role_id, table)
         return self._mark("verify", read == list(limits), found=found, garbled=garbled,
                           angle_limits=read)
 
@@ -134,13 +141,16 @@ class Onboarding:
         if role != "lift":
             return self._mark("forget_travel", True, forgot=False)
         store = self._store
-        # An unknown travel is left as it is: a blank record's unknown cover
-        # state can't be saved.
-        if store.travel == store.travel:
+        forgot = not math.isnan(store.travel)
+        if forgot and store.state == cover_state.UNKNOWN:
+            # A travel with no cover state: a corrupt record, which can't be
+            # saved as it is. A blank one has neither.
+            return self._mark("forget_travel", False, forgot=False)
+        if forgot:
             store.save(store.state, persist.NAN, store.full_travel)
         full_travel = store.full_travel
-        return self._mark("forget_travel", True, forgot=True,
-                          full_travel=full_travel if full_travel == full_travel else None)
+        return self._mark("forget_travel", True, forgot=forgot,
+                          full_travel=None if math.isnan(full_travel) else full_travel)
 
     def bus_check(self):
         """After the operator has plugged the other servo back in: rescan.
@@ -148,14 +158,13 @@ class Onboarding:
         and the bus rate. Where both are SCS, each must also have its role's
         angle limits."""
         found, garbled = self._scan()
-        self._uart.baudrate = servo_bus.BAUD_RATE
         ok = not garbled and found == [
             {"baud_rate": servo_bus.BAUD_RATE, "id": servo_bus.LIFT_ID},
             {"baud_rate": servo_bus.BAUD_RATE, "id": servo_bus.TILT_ID}]
         limits = None
         if ok:
             # (registers, series name, table) by role.
-            servos = {role: self._table(ROLES[role][0]) for role in ROLES}
+            servos = {role: self._read_series(ROLES[role][0]) for role in ROLES}
             ok = all(servo[0] is not None for servo in servos.values())
             if all(servo[1] == "scs" for servo in servos.values()):
                 limits = {role: self._read_limits(ROLES[role][0], servos[role][2])
@@ -166,12 +175,12 @@ class Onboarding:
     def _identify(self):
         """The found servo's series table, from its registers 0-4, or None
         if it has none."""
-        registers, name, table = self._table(self._id)
+        registers, name, table = self._read_series(self._id)
         self._mark("identify", table is not None,
                    registers=registers and list(registers), series=name)
         return table
 
-    def _table(self, scs_id):
+    def _read_series(self, scs_id):
         """A servo's registers 0-4, the name of its series and the series'
         table. The table is None for a series without one, and all three
         are None if no good reply came."""
@@ -182,6 +191,10 @@ class Onboarding:
         return registers, name, SERIES.get(name)
 
     def _write(self, role, table):
+        """Write role's settings into the found servo, reading each back
+        before the next: LOCK=0, the angle limits, the ID, the baud rate,
+        all of them again, then LOCK=1. Goes through if every one read back
+        as written."""
         new_id, limits = ROLES[role]
         encode, decode = table["encode"], table["decode"]
         write = self._reader.write_mem
@@ -207,6 +220,10 @@ class Onboarding:
         # Then at the bus rate. Its reply may come at either rate.
         code = table["baud_rates"].index(servo_bus.BAUD_RATE)
         write(new_id, table["baud_rate"], [code])
+        # Its reply can't say when the flash write is done, as it may come at
+        # the new rate, so this waits as long as an EEPROM write's reply may
+        # take.
+        time.sleep(EEPROM_TIMEOUT_S)
         self._uart.baudrate = servo_bus.BAUD_RATE
         read_code = self._read_byte(new_id, table["baud_rate"])
         if not self._mark("baud_rate", read_code == code,
@@ -226,6 +243,10 @@ class Onboarding:
         return self._mark("lock_on", lock == 1, lock=lock)
 
     def _scan(self):
+        """Ping every ID at every baud rate. Returns the servos that
+        answered and the replies that came garbled, anything but a good
+        reply or none, each with its baud rate and ID. Leaves the UART at the
+        bus rate."""
         found, garbled = [], []
         for baud_rate in BAUD_RATES:
             self._uart.baudrate = baud_rate
@@ -237,15 +258,18 @@ class Onboarding:
                 elif problem != "no reply":
                     garbled.append({"baud_rate": baud_rate, "id": scs_id,
                                     "problem": problem})
+        self._uart.baudrate = servo_bus.BAUD_RATE
         return found, garbled
 
     def _read(self, scs_id, address, n):
-        """n bytes read from address onwards, or None if no good reply
-        came."""
-        reply = self._reader.read(scs_id, address, n)
+        """n bytes read from address onwards, or None if no good reply came.
+        Tried up to ATTEMPTS times: a servo writing its flash doesn't
+        answer."""
+        reply = first_reply(lambda: self._reader.read(scs_id, address, n))
         return None if reply is None else reply[1]
 
     def _read_byte(self, scs_id, address):
+        """One byte read from address, or None if no good reply came."""
         data = self._read(scs_id, address, 1)
         return None if data is None else data[0]
 

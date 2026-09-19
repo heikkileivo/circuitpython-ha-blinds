@@ -177,6 +177,16 @@ class WriteOrderTest(unittest.TestCase):
         self.assertEqual((servo.id, servo.baud_rate, servo.angle_limits, servo.lock),
                          (2, 250000, (10, 1000), 1))
 
+    def test_a_servo_busy_writing_its_flash_is_read_again(self):
+        # Its reply to the baud rate write can't say when that's done: it
+        # comes at the old rate.
+        servo = factory_servo(busy_after_eeprom_write=2)
+        run = Run(servo)
+
+        self.assertTrue(run.onboarding.onboard("tilt"))
+
+        self.assertEqual((servo.id, servo.baud_rate, servo.lock), (2, 250000, 1))
+
     def test_a_write_that_doesnt_read_back_stops_the_onboarding_there(self):
         servo = factory_servo(refuses=[(Address.MIN_ANGLE_LIMIT_L, b"\x00\x0a\x03\xe8")])
         run = Run(servo)
@@ -264,6 +274,18 @@ class ForgetTravelTest(unittest.TestCase):
         self.assertTrue(run.onboarding.forget_travel("lift"))
 
         self.assertEqual(nvm, bytearray(persist.SIZE))
+        self.assertFalse(run.marker("forget_travel")["forgot"])
+
+    def test_a_travel_with_no_cover_state_fails_and_is_left_alone(self):
+        # Only a corrupt record has one: the blind never saves that.
+        nvm = bytearray(self.RECORD)
+        nvm[2] = 0
+        record = bytes(nvm)
+        run = Run(nvm=nvm)
+
+        self.assertFalse(run.onboarding.forget_travel("lift"))
+
+        self.assertEqual(nvm, record)
 
     def test_a_tilt_onboarding_leaves_persistence_untouched(self):
         nvm = bytearray(self.RECORD)
