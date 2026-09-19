@@ -8,7 +8,7 @@ tilt of 75 leaves it at a servo angle of about 750.
 import unittest
 
 from packet import Address, Instruction, Reader, checksum
-from servo_health import TILT_ID
+from servo_bus import TILT_ID
 from tilt import from_servo_angle, read_at_boot
 from tests.test_packet import FakeUart
 

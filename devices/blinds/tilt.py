@@ -3,7 +3,8 @@ starts from at boot. The conversion is pure, and the read only needs a
 Reader, so the host tests run both."""
 
 from packet import Address
-from servo_health import ATTEMPTS, TILT_ID, first_reply
+from servo_bus import TILT_ID
+from servo_health import ATTEMPTS, first_reply
 
 # The tilt a blind starts from if its tilt servo doesn't reply at boot.
 DEFAULT_TILT = 50

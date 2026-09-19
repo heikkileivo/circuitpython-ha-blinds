@@ -13,7 +13,7 @@ import unittest
 from packet import Address, Reader
 from reset_cause import OPTIONS, boot_decision, record
 from safemode import REASONS, STOP_LIFT, decision
-from servo_health import LIFT_ID
+from servo_bus import LIFT_ID
 from tests.test_packet import FakeUart
 
 

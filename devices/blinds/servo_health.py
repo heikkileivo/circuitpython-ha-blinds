@@ -9,9 +9,8 @@ reads and writes on a fake servo bus."""
 
 from packet import Address
 import lift_stop
+from servo_bus import LIFT_ID, TILT_ID
 
-LIFT_ID = 1
-TILT_ID = 2
 # Attempts at each boot stop write (each checked by reading it back) and at
 # each health read transaction.
 ATTEMPTS = 3

@@ -13,6 +13,7 @@ from blinds import Blinds, ServoException
 from end_sensors import EndSensors
 from packet import Reader
 from components import blinds_discovery
+import servo_bus
 import servo_health
 import status_led
 import reset_cause
@@ -270,7 +271,7 @@ async def main():
     arm_watchdog()
     uart = busio.UART(board.TX,
                             board.RX,
-                            baudrate=250000,
+                            baudrate=servo_bus.BAUD_RATE,
                             receiver_buffer_size=32)
     reader = Reader(uart)
     keys = None
@@ -320,7 +321,7 @@ async def run_blind(reader, end_sensors):
     # Turn on the power to the NeoPixel
     tinys3.set_pixel_power(True)
     print("Lift servo:")
-    reader.output_settings(1)
+    reader.output_settings(servo_bus.LIFT_ID)
 
     device_name = os.getenv("device_name", "Blinds")
     tilt_scale = os.getenv("tilt_scale", 10.0)
