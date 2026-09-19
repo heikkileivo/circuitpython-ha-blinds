@@ -77,55 +77,13 @@ def _load(high, low):
 
 
 class Reader:
-    BAUD_RATE_1M = 0
-    BAUD_RATE_0_5M = 1
-    BAUD_RATE_250K = 2
-    BAUD_RATE_128K = 3
-    BAUD_RATE_115200 = 4
-    BAUD_RATE_76800 = 5
-    BAUD_RATE_57600 = 6
-    BAUD_RATE_38400 = 7
-
-    def __init__(self, uart):
+    def __init__(self, uart, log=True):
+        """log: whether a transaction that got no good reply prints why."""
         self.uart = uart
+        self._log = log
         self._uart_errors = {}
-
-    def output_settings(self, id):
-        print(f"Id: {self.read_1_byte(id, Address.ID)}")
-        print(f"Baud rate: {self.read_1_byte(id, Address.BAUD_RATE)}")
-        print(f"Min ang: {self.read_2_bytes(id, Address.MIN_ANGLE_LIMIT_L)}")
-        print(f"Max ang: {self.read_2_bytes(id, Address.MAX_ANGLE_LIMIT_L)}")
-        print(f"Enable torq: {self.read_1_byte(id, Address.TORQUE_ENABLE)}")
-        print(f"Lock: {self.read_1_byte(id, Address.LOCK)}")
-        print(f"Goal time: {self.read_2_bytes(id, Address.GOAL_TIME_L)}")
-
-
-    def set_id(self, id, new_id):
-        print("Unlocking eprom...")
-        self.write_byte(id, Address.LOCK, 0)
-        print(f"Setting new id to {new_id}...")
-        self.write_byte(id, Address.ID, new_id)
-        print("Locking eprom...")
-        self.write_byte(id, Address.LOCK, 1)
-
-    def set_baud_rate(self, id, baud_rate):
-        print("Unlocking eprom...")
-        self.write_byte(id, Address.LOCK, 0)
-        print(f"Setting baud rate to {baud_rate}")
-        self.write_byte(id, Address.BAUD_RATE, baud_rate)
-
-        print("Locking eprom...")
-        self.write_byte(id, Address.LOCK, 1)
-
-    def set_as_motor(self, id):
-        print("Unlocking eprom...")
-        self.write_byte(id, Address.LOCK, 0)
-        print("Setting min limit...")
-        self.write_word(id, Address.MIN_ANGLE_LIMIT_L, 0)
-        print("Setting max limit...")
-        self.write_word(id, Address.MAX_ANGLE_LIMIT_L, 0)
-        print("Locking eprom...")
-        self.write_byte(id, Address.LOCK, 1)
+        # What was wrong with the last transaction's reply, or None.
+        self.problem = None
 
     def flush_buffer(self):
         count = self.uart.in_waiting
@@ -225,9 +183,10 @@ class Reader:
         self.uart.reset_input_buffer()
         self.uart.write(b"\xff\xff" + body + bytes((checksum(body),)))
         reply = self.uart.read(6 + n)
-        problem = reply_problem(reply, scs_id, n)
+        problem = self.problem = reply_problem(reply, scs_id, n)
         if problem:
             self.count_uart_error(scs_id)
-            print(f"Servo {scs_id}: {problem}: {reply!r}")
+            if self._log:
+                print(f"Servo {scs_id}: {problem}: {reply!r}")
             return None
         return reply[4], reply[5:5 + n]
