@@ -85,7 +85,7 @@ A device that publishes nothing: no uptime, no state. Home Assistant stops heari
 _Avoid_: Offline, dead, zombie
 
 **Reset cause**:
-Why a device last restarted, as published to Home Assistant. A restart the firmware triggers itself carries its own cause (brownout, other safe mode, MQTT escalation or restart loop). The one restart after a watchdog reset, which brings the web workflow up, keeps watchdog as its cause. Otherwise the cause is the chip's reported reason, such as power-on.
+Why a device last restarted, as published to Home Assistant. A restart the firmware triggers itself carries its own cause (brownout, safe mode, MQTT escalation or restart loop). A safe-mode restart carries CircuitPython's reason for it: a hard fault restarts as `safe_mode_hard_fault`, for example. A reason with no cause of its own, or one the firmware can't tell, restarts as other safe mode. The one restart after a watchdog reset, which brings the web workflow up, keeps watchdog as its cause. Otherwise the cause is the chip's reported reason, such as power-on.
 _Avoid_: Reset reason (the chip's raw report, which shows every firmware-triggered restart as a software reset)
 
 **Liveness echo**:

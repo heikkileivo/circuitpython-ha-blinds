@@ -30,11 +30,29 @@ MQTT_ESCALATION = 3
 RESTART_LOOP = 4
 WATCHDOG = 5
 
+# A safe-mode restart carries its reason, by the name of its
+# supervisor.SafeModeReason member, and publishes "safe_mode_<reason>". A
+# stored code outlives a deploy, so none may change. BROWNOUT has its own
+# cause above, and any reason not here is OTHER_SAFE_MODE. The internal
+# WATCHDOG is CircuitPython's, not the chip's watchdog reset.
+SAFE_MODE_CAUSES = {"FLASH_WRITE_FAIL": 6,
+                    "GC_ALLOC_OUTSIDE_VM": 7,
+                    "HARD_FAULT": 8,
+                    "INTERRUPT_ERROR": 9,
+                    "NLR_JUMP_FAIL": 10,
+                    "NO_HEAP": 11,
+                    "PROGRAMMATIC": 12,
+                    "SDK_FATAL_ERROR": 13,
+                    "STACK_OVERFLOW": 14,
+                    "WATCHDOG": 15}
+
 _STORED_CAUSES = {BROWNOUT: "brownout",
                   OTHER_SAFE_MODE: "other_safe_mode",
                   MQTT_ESCALATION: "mqtt_escalation",
                   RESTART_LOOP: "restart_loop",
                   WATCHDOG: "watchdog"}
+_STORED_CAUSES.update({code: "safe_mode_" + reason.lower()
+                       for reason, code in SAFE_MODE_CAUSES.items()})
 
 # The cause for each of the chip's reasons, by the name of its
 # microcontroller.ResetReason member. UNKNOWN and RESCUE_DEBUG are "other",
@@ -100,9 +118,10 @@ def at_boot():
 
 
 def restart(cause):
-    """Restart with a firmware-triggered cause, BROWNOUT to WATCHDOG: store
-    it, then reset. Doesn't return, even if storing fails: a restart
-    published as "software" beats none, for example staying in safe mode."""
+    """Restart with a firmware-triggered cause, BROWNOUT to WATCHDOG or one
+    of SAFE_MODE_CAUSES: store it, then reset. Doesn't return, even if
+    storing fails: a restart published as "software" beats none, for example
+    staying in safe mode."""
     import microcontroller
     try:
         microcontroller.nvm[NVM_OFFSET:NVM_OFFSET + 2] = record(cause)

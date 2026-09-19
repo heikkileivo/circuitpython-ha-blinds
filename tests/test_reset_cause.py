@@ -8,12 +8,36 @@ happens. The chip's reasons are the names of microcontroller.ResetReason's
 members in CircuitPython 9.1 (shared-bindings/microcontroller/ResetReason.c).
 """
 
+import contextlib
+import sys
+import types
 import unittest
+from unittest import mock
 
-from reset_cause import OPTIONS, boot_decision
+import reset_cause
+from reset_cause import NVM_OFFSET, OPTIONS, boot_decision
 
 CHIP_REASONS = ("POWER_ON", "BROWNOUT", "SOFTWARE", "DEEP_SLEEP_ALARM", "RESET_PIN",
                 "WATCHDOG", "UNKNOWN", "RESCUE_DEBUG")
+
+
+# The codes at offset 1, as decided in #13 and #41, then one per safe-mode
+# reason (#104). A stored code outlives a deploy, so none may change.
+SAFE_MODE_CAUSES = {6: "safe_mode_flash_write_fail", 7: "safe_mode_gc_alloc_outside_vm",
+                    8: "safe_mode_hard_fault", 9: "safe_mode_interrupt_error",
+                    10: "safe_mode_nlr_jump_fail", 11: "safe_mode_no_heap",
+                    12: "safe_mode_programmatic", 13: "safe_mode_sdk_fatal_error",
+                    14: "safe_mode_stack_overflow", 15: "safe_mode_watchdog"}
+STORED_CAUSES = {1: "brownout", 2: "other_safe_mode", 3: "mqtt_escalation",
+                 4: "restart_loop", 5: "watchdog", **SAFE_MODE_CAUSES}
+
+
+@contextlib.contextmanager
+def fake_microcontroller(nvm):
+    """microcontroller with nvm as its NVM. Yields its reset(), a mock."""
+    fake = types.SimpleNamespace(nvm=nvm, reset=mock.Mock())
+    with mock.patch.dict(sys.modules, microcontroller=fake):
+        yield fake.reset
 
 
 def boot(nvm, chip_reason):
@@ -62,24 +86,45 @@ class ChipReasonTest(unittest.TestCase):
         self.assertEqual(boot(bytearray(2), "SOMETHING_NEW"), ("other", False))
 
     def test_the_options_are_the_chip_reasons_the_firmware_causes_and_other(self):
-        # As allocated in #14.
+        # As allocated in #14, plus one safe-mode cause per reason (#104).
         self.assertCountEqual(OPTIONS, ["power_on", "reset_pin", "watchdog", "software",
                                         "deep_sleep_alarm", "brownout", "other_safe_mode",
-                                        "mqtt_escalation", "restart_loop", "other"])
+                                        "mqtt_escalation", "restart_loop", "other"]
+                              + list(SAFE_MODE_CAUSES.values()))
 
 
 class StoredCauseTest(unittest.TestCase):
+    def test_each_safe_mode_code_is_unique_and_clear_of_the_others(self):
+        codes = list(reset_cause.SAFE_MODE_CAUSES.values())
+
+        self.assertEqual(len(set(codes)), len(codes))
+        self.assertTrue(set(codes).isdisjoint({1, 2, 3, 4, 5}))
+
     def test_each_stored_cause_is_published_and_cleared(self):
-        # The codes at offset 1, as decided in #13 and #41.
-        causes = {1: "brownout", 2: "other_safe_mode", 3: "mqtt_escalation",
-                  4: "restart_loop", 5: "watchdog"}
-        for code, cause in causes.items():
+        for code, cause in STORED_CAUSES.items():
             with self.subTest(cause=cause):
                 nvm = bytearray((0xB1, code))
 
                 self.assertEqual(boot(nvm, "SOFTWARE"), (cause, False))
                 # Both bytes zeroed, so a soft reload doesn't publish it again.
                 self.assertEqual(nvm, bytearray(2))
+
+    def test_a_stored_code_this_build_doesnt_know_is_other(self):
+        nvm = bytearray((0xB1, 200))
+
+        self.assertEqual(boot(nvm, "SOFTWARE"), ("other", False))
+        self.assertEqual(nvm, bytearray(2))
+
+    def test_each_cause_is_stored_by_restart_and_published_after_the_software_reset(self):
+        for code, cause in STORED_CAUSES.items():
+            with self.subTest(cause=cause):
+                nvm = bytearray(NVM_OFFSET + 2)
+
+                with fake_microcontroller(nvm) as reset:
+                    reset_cause.restart(code)
+
+                reset.assert_called_once_with()
+                self.assertEqual(boot_decision(bytes(nvm[NVM_OFFSET:]), "SOFTWARE")[0], cause)
 
     def test_nothing_is_written_when_nothing_is_stored(self):
         # NVM is flash, so a boot with nothing stored leaves it alone, blank
