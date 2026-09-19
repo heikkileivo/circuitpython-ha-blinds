@@ -1,8 +1,8 @@
-"""The servo bus settings: the lift's and the tilt's IDs, and the bus baud
+"""The servo bus values: the lift's and the tilt's IDs, and the bus baud
 rate. Every servo and every UART on the bus uses these, and onboarding a
 replacement servo writes them into it (#99).
 
-Constants, not settings: a mistyped setting would stop boot.py and
+Constants, not settings.toml settings: a mistyped setting would stop boot.py and
 safemode.py from reaching the lift. It imports nothing, so they stay light.
 """
 
