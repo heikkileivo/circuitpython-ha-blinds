@@ -3,6 +3,7 @@ from move_control import MoveControl
 from packet import Address
 from servo_health import MoveFigures
 from tilt import read_at_boot
+import servo_bus
 import servo_health
 import cover_state
 import lift_stop
@@ -296,8 +297,8 @@ class Blinds:
             self._on_opened = on_opened
             self._on_moved = on_moved
             self._moves = 0             # Moves under way, tilt-only ones included
-            self._lift_servo = Servo(1, reader)
-            self._tilt_servo = Servo(2, reader, scale=tilt_scale)
+            self._lift_servo = Servo(servo_bus.LIFT_ID, reader)
+            self._tilt_servo = Servo(servo_bus.TILT_ID, reader, scale=tilt_scale)
             self._end_sensors = end_sensors
             # The cover state starts as worked out at boot, from the end
             # sensors and the record in NVM. The record keeps an interrupted

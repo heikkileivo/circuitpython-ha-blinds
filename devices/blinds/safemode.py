@@ -18,11 +18,14 @@ themselves.
 """
 
 import reset_cause
+import servo_bus
 
-# Duty 0 (GOAL_TIME = 0) written to the lift servo, ID 1: FF FF ID LEN
-# WRITE address 44 (GOAL_TIME_L), then 00 00 and the checksum. No reply is
-# awaited, and the torque is left as it is.
-STOP_LIFT = b"\xff\xff\x01\x05\x03\x2c\x00\x00\xca"
+# Duty 0 (GOAL_TIME = 0) written to the lift servo: FF FF ID LEN WRITE
+# address 44 (GOAL_TIME_L), then 00 00 and the checksum, the inverted low
+# byte of the sum from ID on. No reply is awaited, and the torque is left as
+# it is.
+_BODY = (servo_bus.LIFT_ID, 0x05, 0x03, 0x2C, 0x00, 0x00)
+STOP_LIFT = b"\xff\xff" + bytes(_BODY) + bytes((~sum(_BODY) & 0xFF,))
 
 WAIT_S = 30
 
@@ -54,7 +57,7 @@ def recover():
     print(f"Safe mode ({reason}): restarting in {wait_s} s.")
     if stop_lift:
         try:
-            uart = busio.UART(board.TX, board.RX, baudrate=250000)
+            uart = busio.UART(board.TX, board.RX, baudrate=servo_bus.BAUD_RATE)
             uart.write(STOP_LIFT)
         except Exception as e:
             # The wait and the restart must still happen.
