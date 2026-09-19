@@ -135,32 +135,78 @@ class ServoMinVoltageTest(unittest.TestCase):
         self.assertIsNone(servo_min_voltage(MoveFigures(), MoveFigures()))
 
 
+# The rate each baud code at BAUD_RATE sets, from Feetech's SCS15 memory
+# table.
+FEETECH_BAUD_RATES = {0: 1000000, 1: 500000, 2: 250000, 3: 128000, 4: 115200,
+                      5: 76800, 6: 57600, 7: 38400}
+
+
 class FakeServo:
     """One servo on a FakeBus: its memory table, and how it misbehaves.
 
     ignored_writes writes get their reply but change nothing, and so does
     every write in refuses, as (address, data bytes). missed_pings pings get
     no reply, and a servo that doesn't answer never replies. Every reply
-    carries error as its ERROR byte.
+    carries error as its ERROR byte, and a servo that garbles sends each one
+    with a bad checksum.
+
+    It answers to the ID and at the baud rate its memory table holds, so a
+    write to either takes effect at once. The EEPROM, below TORQUE_ENABLE,
+    has a copy that survives power_cycle(): a write there reaches it only
+    while LOCK is 0, and never at a volatile address. LOCK is SRAM, and
+    powers up as lock. After each write there, a servo that's busy for n
+    requests gives them no reply, as while it writes its flash.
     """
 
     def __init__(self, scs_id, duty=0, torque=0, voltage=85, temperature=21,
                  status=0, error=0, ignored_writes=0, missed_pings=0,
-                 answers=True, refuses=()):
-        self.id = scs_id
+                 answers=True, refuses=(), baud_code=2, angle_limits=(0, 0),
+                 registers=(3, 25, 1, 9, 15), lock=0, volatile=(), garbles=False,
+                 busy_after_eeprom_write=0):
         self.memory = bytearray(Address.PRESENT_CURRENT_H + 1)
+        self.memory[0:5] = bytes(registers)
+        self.memory[Address.ID] = scs_id
+        self.memory[Address.BAUD_RATE] = baud_code
         # Words are big-endian: the high byte sits at the _L address.
+        self.memory[Address.MIN_ANGLE_LIMIT_L:Address.MAX_ANGLE_LIMIT_H + 1] = bytes(
+            (angle_limits[0] >> 8, angle_limits[0] & 0xFF,
+             angle_limits[1] >> 8, angle_limits[1] & 0xFF))
         self.memory[Address.GOAL_TIME_L] = duty >> 8
         self.memory[Address.GOAL_TIME_H] = duty & 0xFF
         self.memory[Address.TORQUE_ENABLE] = torque
+        self.memory[Address.LOCK] = lock
         self.memory[Address.PRESENT_VOLTAGE] = voltage
         self.memory[Address.PRESENT_TEMPERATURE] = temperature
         self.memory[Address.STATUS] = status
+        self.eeprom = bytearray(self.memory[:Address.TORQUE_ENABLE])
+        self.lock_at_power_up = lock
+        self.volatile = volatile
         self.error = error
         self.ignored_writes = ignored_writes
         self.missed_pings = missed_pings
         self.answers = answers
         self.refuses = refuses
+        self.garbles = garbles
+        self.busy_after_eeprom_write = busy_after_eeprom_write
+        self.busy = 0
+
+    @property
+    def id(self):
+        return self.memory[Address.ID]
+
+    @property
+    def baud_rate(self):
+        return FEETECH_BAUD_RATES[self.memory[Address.BAUD_RATE]]
+
+    @property
+    def angle_limits(self):
+        m = self.memory
+        return ((m[Address.MIN_ANGLE_LIMIT_L] << 8) | m[Address.MIN_ANGLE_LIMIT_H],
+                (m[Address.MAX_ANGLE_LIMIT_L] << 8) | m[Address.MAX_ANGLE_LIMIT_H])
+
+    @property
+    def lock(self):
+        return self.memory[Address.LOCK]
 
     @property
     def duty(self):
@@ -170,15 +216,38 @@ class FakeServo:
     def torque(self):
         return self.memory[Address.TORQUE_ENABLE]
 
+    def write(self, address, data):
+        """A WRITE's bytes, stored as the servo stores them."""
+        self.memory[address:address + len(data)] = data
+        if address < len(self.eeprom):
+            self.busy = self.busy_after_eeprom_write
+        if self.lock == 0:
+            for a in range(address, min(address + len(data), len(self.eeprom))):
+                if a not in self.volatile:
+                    self.eeprom[a] = self.memory[a]
+
+    def power_cycle(self):
+        """Unplugged and plugged back in: the EEPROM and LOCK reload."""
+        self.memory[:len(self.eeprom)] = self.eeprom
+        self.memory[Address.LOCK] = self.lock_at_power_up
+
 
 class FakeBus:
     """A servo bus that works like the servos: a WRITE stores its bytes in
     the servo's memory table, a READ returns them, a PING just answers.
-    read() returns None when nothing came, like busio.UART's."""
+    read() returns None when nothing came, like busio.UART's.
 
-    def __init__(self, *servos):
-        self.servos = {servo.id: servo for servo in servos}
+    A request reaches the servos at its ID and at the bus's baudrate. Two
+    that answer at once garble each other's reply, as a bad checksum. The
+    reply to a write comes from the servo as the write left it.
+    """
+
+    def __init__(self, *servos, baudrate=250000):
+        self.servos = servos
+        self.baudrate = baudrate
         self.requests = []
+        # The baud rate each request went at.
+        self.request_rates = []
         self.pending = b""
         self.timeout = 1.0
 
@@ -188,8 +257,14 @@ class FakeBus:
     def write(self, request):
         scs_id, instruction, params = request[2], request[4], bytes(request[5:-1])
         self.requests.append((scs_id, instruction, params))
-        servo = self.servos.get(scs_id)
-        if servo is None or not servo.answers:
+        self.request_rates.append(self.baudrate)
+        servos = [servo for servo in self.servos
+                  if servo.id == scs_id and servo.baud_rate == self.baudrate and servo.answers]
+        if not servos:
+            return
+        servo = servos[0]
+        if servo.busy:
+            servo.busy -= 1
             return
         if instruction == Instruction.PING and servo.missed_pings:
             servo.missed_pings -= 1
@@ -201,18 +276,25 @@ class FakeBus:
             elif (params[0], params[1:]) in servo.refuses:
                 pass
             else:
-                servo.memory[params[0]:params[0] + len(params) - 1] = params[1:]
+                servo.write(params[0], params[1:])
         elif instruction == Instruction.READ:
             address, n = params
             data = bytes(servo.memory[address:address + n])
-        body = bytes((scs_id, len(data) + 2, servo.error)) + data
-        self.pending = b"\xff\xff" + body + bytes((checksum(body),))
+        body = bytes((servo.id, len(data) + 2, servo.error)) + data
+        garbled = len(servos) > 1 or servo.garbles
+        self.pending = b"\xff\xff" + body + bytes(((checksum(body) + garbled) & 0xFF,))
 
     def read(self, nbytes):
         if not self.pending:
             return None
         data, self.pending = self.pending[:nbytes], self.pending[nbytes:]
         return data
+
+    def writes(self):
+        """The WRITE requests the bus carried, as (baud rate, ID, params)."""
+        return [(rate, scs_id, params)
+                for rate, (scs_id, instruction, params) in zip(self.request_rates, self.requests)
+                if instruction == Instruction.WRITE]
 
 
 class BootReinitTest(unittest.TestCase):

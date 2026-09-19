@@ -64,8 +64,12 @@ class ServoBusTest(unittest.TestCase):
                          (1, 2, 250000))
 
     def test_the_baud_rate_is_written_only_in_servo_bus(self):
+        # And in onboard.py's table of Feetech's baud rates, where 250000 is
+        # code 2 whatever rate the bus runs at.
+        self.assertEqual(sum("250000" in line for line in
+                             (BLINDS / "onboard.py").read_text().splitlines()), 1)
         for path in DEVICE_CODE:
-            if path.name != "servo_bus.py":
+            if path.name not in ("servo_bus.py", "onboard.py"):
                 with self.subTest(path=path.name):
                     source = path.read_text()
                     self.assertNotIn("250000", source)
@@ -98,6 +102,12 @@ class ServoBusTest(unittest.TestCase):
             for module in imported_modules(BLINDS / name):
                 with self.subTest(file=name, module=module):
                     self.assertIn(module, BUILT_IN | set(DEPLOYED_MODULES))
+
+    def test_nothing_imports_onboard_at_boot(self):
+        # The host tool imports it from the REPL once code.py has stopped.
+        for name in ("boot.py", "code.py", "safemode.py"):
+            with self.subTest(file=name):
+                self.assertNotIn("onboard", imported_modules(BLINDS / name))
 
     def test_servo_bus_imports_nothing(self):
         # boot.py and safemode.py import it, and stay light.

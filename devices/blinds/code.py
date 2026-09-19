@@ -320,8 +320,6 @@ async def run_blind(reader, end_sensors):
 
     # Turn on the power to the NeoPixel
     tinys3.set_pixel_power(True)
-    print("Lift servo:")
-    reader.output_settings(servo_bus.LIFT_ID)
 
     device_name = os.getenv("device_name", "Blinds")
     tilt_scale = os.getenv("tilt_scale", 10.0)
