@@ -339,5 +339,16 @@ class BusCheckTest(unittest.TestCase):
         self.assertIsNone(run.marker("bus_check")["angle_limits"])
 
 
+class CloseTest(unittest.TestCase):
+    def test_closing_frees_the_uart(self):
+        # The host tool runs each step with its own Onboarding, so the next
+        # one, or a rerun, finds the pins free.
+        run = Run(factory_servo())
+
+        run.onboarding.close()
+
+        self.assertTrue(run.bus.deinited)
+
+
 if __name__ == "__main__":
     unittest.main()

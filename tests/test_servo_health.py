@@ -250,6 +250,10 @@ class FakeBus:
         self.request_rates = []
         self.pending = b""
         self.timeout = 1.0
+        self.deinited = False
+
+    def deinit(self):
+        self.deinited = True
 
     def reset_input_buffer(self):
         self.pending = b""
