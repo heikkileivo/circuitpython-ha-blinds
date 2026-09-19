@@ -94,7 +94,8 @@ class Onboarding:
         self._id = None
 
     def close(self):
-        """Free the UART's pins."""
+        """Free the UART's pins. The Onboarding owns its UART, as
+        on_device() makes it."""
         self._uart.deinit()
 
     def onboard(self, role):

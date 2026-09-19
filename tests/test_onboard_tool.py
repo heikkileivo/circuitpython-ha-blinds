@@ -18,8 +18,10 @@ from pathlib import Path
 from unittest import mock
 
 import cover_state
+import onboard as device_onboard
 import persist
 from onboard import Onboarding
+from tests.test_onboard import factory_servo
 from tests.test_servo_health import FakeBus, FakeServo
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
@@ -50,12 +52,6 @@ def device_run(step, *servos, args=(), store=None):
     return lines
 
 
-def factory_servo(**changes):
-    settings = dict(baud_code=0, angle_limits=(20, 1003), lock=1)
-    settings.update(changes)
-    return FakeServo(1, **settings)
-
-
 TRACEBACK_OUTPUT = (TITLE + "\r\npaste mode; Ctrl-C to cancel, Ctrl-D to finish\r\n"
                     "=== import onboard\r\n=== o = onboard.on_device()\r\n"
                     "Traceback (most recent call last):\r\n"
@@ -80,6 +76,14 @@ class MarkerTest(unittest.TestCase):
         (marker,) = tool.markers(output)
 
         self.assertEqual(marker["angle_limits"], {"lift": [0, 0], "tilt": [10, 1000]})
+
+    def test_the_tool_looks_for_the_device_modules_marker(self):
+        self.assertEqual(tool.MARKER, device_onboard.MARKER)
+
+    def test_a_marker_cut_off_by_a_timeout_is_skipped(self):
+        output = repl_output("o.bus_check()", ['ONBOARD {"step": "bus_check", "ok": tr'])
+
+        self.assertEqual(tool.markers(output[:-len("\r\n>>> ")]), [])
 
     def test_a_traceback_is_found(self):
         self.assertTrue(tool.has_traceback(TRACEBACK_OUTPUT))
@@ -152,10 +156,15 @@ class FakeRepl:
         self.calls.append("interrupt")
         return self.interrupt_output
 
-    def run(self, code, timeout=20):
+    def run(self, code, timeout=20, on_output=None):
         (call,) = [call for call in self.outputs if f"o.{call}(" in code]
         self.calls.append(call)
-        return self.outputs[call]
+        # In two parts, as a websocket may deliver it.
+        output = self.outputs[call]
+        if on_output:
+            on_output(output[:len(output) // 2])
+            on_output(output[len(output) // 2:])
+        return output
 
     def reload(self, timeout=20):
         self.calls.append("reload")
@@ -224,7 +233,26 @@ class FlowTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(repl.calls, ["interrupt", "onboard"])
         self.assertIn("FAIL: the scan step failed", operator.text())
+        self.assertIn("left at the REPL", operator.text())
         self.assertIn("Run the tool again", operator.text())
+
+    def test_each_marker_is_told_once_as_it_arrives(self):
+        _, operator = run("tilt", FakeRepl(recorded("tilt")))
+
+        told = [line.strip().split(":")[0] for line in operator.told if line.startswith("  ")]
+        self.assertEqual(told, ["scan", "identify", "lock_off", "angle_limits", "id",
+                                "baud_rate", "read_back", "lock_on", "verify", "bus_check"])
+
+    def test_a_step_that_timed_out_may_still_be_running_so_it_says_to_wait(self):
+        cut = recorded("lift")["onboard"][:-len(">>> ")]
+        repl = FakeRepl(recorded("lift", onboard=cut))
+
+        ok, operator = run("lift", repl)
+
+        self.assertFalse(ok)
+        self.assertIn("FAIL: no reply in time", operator.text())
+        self.assertIn("may still be running", operator.text())
+        self.assertNotIn("left at the REPL", operator.text())
 
     def test_a_setting_that_didnt_persist_stops_it_at_the_verify(self):
         volatile = factory_servo(volatile=(5,))
@@ -256,6 +284,8 @@ class FlowTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(repl.calls, ["interrupt"])
         self.assertEqual(operator.asked, [])
+        self.assertIn("may still be running code.py", operator.text())
+        self.assertNotIn("left at the REPL", operator.text())
 
 
 class FakeWebsocket:
@@ -317,13 +347,30 @@ class TransportTest(unittest.TestCase):
                 self.assertNotIn(f"import {module}", source)
 
 
-class HelpTest(unittest.TestCase):
-    def test_help_documents_the_device_and_the_role(self):
-        result = subprocess.run([sys.executable, str(TOOLS / "onboard.py"), "--help"],
-                                capture_output=True, text=True, check=True)
+class CliTest(unittest.TestCase):
+    def cli(self, script, *args):
+        return subprocess.run([sys.executable, str(TOOLS / script), *args],
+                              capture_output=True, text=True)
 
+    def test_help_documents_the_device_and_the_role(self):
+        result = self.cli("onboard.py", "--help")
+
+        self.assertEqual(result.returncode, 0)
         self.assertIn("devices.json", result.stdout)
         self.assertIn("{lift,tilt}", result.stdout)
+
+    def test_the_repl_cli_documents_its_modes(self):
+        result = self.cli("repl.py", "--help")
+
+        self.assertEqual(result.returncode, 0)
+        for mode in ("--interrupt", "--reload", "--put", "code"):
+            self.assertIn(mode, result.stdout)
+
+    def test_the_repl_cli_with_nothing_to_do_is_a_usage_error(self):
+        result = self.cli("repl.py", "some-blind")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage:", result.stderr)
 
 
 if __name__ == "__main__":

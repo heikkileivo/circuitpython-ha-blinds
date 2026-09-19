@@ -19,14 +19,31 @@ import sys
 
 from repl import Repl, at_prompt, clean, device, has_traceback
 
+# The device's onboard module prints this before each marker's JSON. It
+# must match devices/blinds/onboard.py's MARKER.
 MARKER = "ONBOARD "
+
+# What the operator is told about the blind when the tool stops: at the
+# REPL, where a failed step leaves it; maybe still running a step that
+# timed out or was interrupted; or maybe still running code.py.
+AT_REPL = "The blind is left at the REPL, not rebooted."
+STEP_RUNNING = ("The step may still be running on the blind: wait a minute before "
+                "running the tool again.")
+CODE_RUNNING = "The blind may still be running code.py."
 
 
 def markers(output):
     """The markers in REPL output, in order. Paste mode's echo of the code
-    starts with "=== ", so it never reads as one."""
-    return [json.loads(line[len(MARKER):]) for line in clean(output).split("\n")
-            if line.startswith(MARKER)]
+    starts with "=== ", so it never reads as one, and a marker cut off by a
+    timeout is skipped."""
+    found = []
+    for line in clean(output).split("\n"):
+        if line.startswith(MARKER):
+            try:
+                found.append(json.loads(line[len(MARKER):]))
+            except ValueError:
+                pass
+    return found
 
 
 def outcome(output, last_step):
@@ -60,13 +77,15 @@ def step_code(call):
 
 def describe(marker):
     """One marker as a line for the operator."""
-    values = [f"{name.replace('_', ' ')} {_value(value)}" for name, value in marker.items()
+    values = [f"{name.replace('_', ' ')} {_shown(value)}" for name, value in marker.items()
               if name not in ("step", "ok")]
     line = f"{marker['step']}: {'ok' if marker['ok'] else 'FAILED'}"
     return line + (f" ({'; '.join(values)})" if values else "")
 
 
-def _value(value):
+def _shown(value):
+    """A marker's value as the operator reads it: the servos a scan found
+    as IDs at baud rates, anything else as JSON."""
     if isinstance(value, list) and value and all(isinstance(v, dict) and "id" in v
                                                  for v in value):
         return ", ".join(f"ID {v['id']} at {v['baud_rate']} baud"
@@ -76,59 +95,88 @@ def _value(value):
     return json.dumps(value)
 
 
+class MarkerPrinter:
+    """Tells the operator each marker line as its output arrives, in
+    whatever chunks the websocket delivers it."""
+
+    def __init__(self, say):
+        self._say = say
+        self._pending = ""
+
+    def __call__(self, chunk):
+        lines = (self._pending + clean(chunk)).split("\n")
+        self._pending = lines.pop()
+        for marker in markers("\n".join(lines)):
+            self._say("  " + describe(marker))
+
+
 def run(name, role, repl, confirm=input, say=print, reload_timeout=5):
     """Onboard a new servo into the blind name as role, "lift" or "tilt",
     on its REPL repl. confirm asks the operator to do something and waits,
     and say tells them. Returns whether it passed."""
-    other = "tilt" if role == "lift" else "lift"
-    say("Stopping code.py...")
-    if not at_prompt(repl.interrupt()):
-        return _stopped(name, say, "the blind didn't reach the REPL")
-
-    confirm(f"Unplug the {other} servo and the old {role} servo from the daisy chain, and "
-            f"plug in the new {role} servo, so it's the only servo on the bus. "
-            "Press Enter when it is. ")
-    if not _step(name, repl, say, f'onboard("{role}")', "lock_on", 90):
-        return False
-
-    confirm(f"Unplug the new {role} servo and plug it back in, to power-cycle it. "
-            "Press Enter when it's back. ")
-    if not _step(name, repl, say, f'verify("{role}")', "verify", 60):
-        return False
-    if role == "lift" and not _step(name, repl, say, 'forget_travel("lift")',
-                                    "forget_travel", 20):
-        return False
-
-    confirm(f"Plug the {other} servo back into the daisy chain. Press Enter when it is. ")
-    if not _step(name, repl, say, "bus_check()", "bus_check", 60):
-        return False
-
-    say("Soft-rebooting the blind...")
-    repl.reload(reload_timeout)
-    say(f"PASS: the new {role} servo is onboarded, and the blind is running code.py again. "
-        "See docs/servo-onboarding.md for the checks after it.")
-    return True
+    return _Run(name, repl, say).onboard(role, confirm, reload_timeout)
 
 
-def _step(name, repl, say, call, last_step, timeout):
-    """Run call on the device and tell the operator its markers. Returns
-    whether it went through."""
-    say(f"Running {call} on the blind...")
-    output = repl.run(step_code(call), timeout)
-    for marker in markers(output):
-        say("  " + describe(marker))
-    ok, reason = outcome(output, last_step)
-    if not ok:
+class _Run:
+    """One run of the tool on one blind."""
+
+    def __init__(self, name, repl, say):
+        self.name = name
+        self.repl = repl
+        self.say = say
+
+    def onboard(self, role, confirm, reload_timeout):
+        other = "tilt" if role == "lift" else "lift"
+        self.say("Stopping code.py...")
+        if not at_prompt(self.repl.interrupt()):
+            return self.stopped("the blind didn't reach the REPL", CODE_RUNNING)
+
+        confirm(f"Unplug the {other} servo and the old {role} servo from the daisy chain, "
+                f"and plug in the new {role} servo, so it's the only servo on the bus. "
+                "Press Enter when it is. ")
+        if not self.step(f'onboard("{role}")', "lock_on", 90):
+            return False
+
+        confirm(f"Unplug the new {role} servo and plug it back in, to power-cycle it. "
+                "Press Enter when it's back. ")
+        if not self.step(f'verify("{role}")', "verify", 60):
+            return False
+        if role == "lift" and not self.step('forget_travel("lift")', "forget_travel", 20):
+            return False
+
+        confirm(f"Plug the {other} servo back into the daisy chain. Press Enter when it is. ")
+        if not self.step("bus_check()", "bus_check", 60):
+            return False
+
+        self.say("Soft-rebooting the blind...")
+        self.repl.reload(reload_timeout)
+        self.say(f"PASS: the new {role} servo is onboarded, and the blind was soft-rebooted. "
+                 "Check that it comes back online in Home Assistant, then do the checks in "
+                 "docs/servo-onboarding.md.")
+        return True
+
+    def step(self, call, last_step, timeout):
+        """Run call on the device, telling the operator each marker as it
+        comes. Returns whether it went through."""
+        self.say(f"Running {call} on the blind. A scan takes about 20 s...")
+        output = self.repl.run(step_code(call), timeout, on_output=MarkerPrinter(self.say))
+        ok, reason = outcome(output, last_step)
+        if ok:
+            return True
         if has_traceback(output):
-            say(clean(output))
-        return _stopped(name, say, reason)
-    return True
+            self.say(clean(output))
+        return self.stopped(reason, AT_REPL if at_prompt(output) else STEP_RUNNING)
+
+    def stopped(self, reason, where):
+        return stopped(self.name, self.say, reason, where)
 
 
-def _stopped(name, say, reason):
-    say(f"FAIL: {reason}. The blind is left at the REPL, not rebooted.\n"
-        f"Run the tool again to recover: its scan finds the servo wherever it was left.\n"
-        f"To get the blind running without onboarding, once its servos are right: "
+def stopped(name, say, reason, where):
+    """Tell the operator the tool stopped, where that leaves the blind, and
+    how to recover. Returns False, as the run didn't pass."""
+    say(f"FAIL: {reason}. {where}\n"
+        "Run the tool again to recover: its scan finds the servo wherever it was left.\n"
+        "To get the blind running without onboarding, once its servos are right: "
         f"python3 tools/repl.py {name} --reload, or power-cycle it.")
     return False
 
@@ -148,11 +196,14 @@ def main():
     try:
         ok = run(dev["name"], args.role, Repl(dev, echo=False))
     except (KeyboardInterrupt, EOFError):
-        ok = _stopped(dev["name"], print, "stopped by the operator")
+        ok = stopped(dev["name"], print, "stopped by the operator",
+                     "If a step was running, it may still be running on the blind: wait a "
+                     "minute before running the tool again.")
     except Exception as e:
         # Such as the websocket refusing: the web workflow doesn't start
         # after a watchdog or brownout reset.
-        ok = _stopped(dev["name"], print, f"couldn't talk to the blind: {e!r}")
+        ok = stopped(dev["name"], print, f"couldn't talk to the blind: {e!r}",
+                     "If it was mid-step, the step may still be running on the blind.")
     sys.exit(0 if ok else 1)
 
 

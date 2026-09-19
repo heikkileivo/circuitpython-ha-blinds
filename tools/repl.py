@@ -45,6 +45,7 @@ def clean(output):
 
 
 def has_traceback(output):
+    """Whether the device printed a traceback: it raised an error."""
     return TRACEBACK in output
 
 
@@ -58,28 +59,31 @@ def paste(code):
     return [("\x05", 0.2), (code.replace("\n", "\r"), 0.1), ("\x04", 0)]
 
 
-async def session(dev, sends, timeout, until_prompt=True, echo=True):
+async def session(dev, sends, timeout, until_prompt=True, echo=True, on_output=None):
     """Send each of sends, then read what comes back until the prompt, or
-    for timeout seconds. Returns the raw output."""
+    for timeout seconds. Returns the raw output, and hands each chunk to
+    on_output as it comes."""
     import websockets
 
-    tok = base64.b64encode(f":{dev['password']}".encode()).decode()
+    token = base64.b64encode(f":{dev['password']}".encode()).decode()
     url = f"ws://{dev['host']}/cp/serial/"
     out = ""
-    async with websockets.connect(url, additional_headers={"Authorization": f"Basic {tok}"},
+    async with websockets.connect(url, additional_headers={"Authorization": f"Basic {token}"},
                                   open_timeout=5) as ws:
-        for s, pause in sends:
-            await ws.send(s)
+        for data, pause in sends:
+            await ws.send(data)
             await asyncio.sleep(pause)
         loop = asyncio.get_running_loop()
         end = loop.time() + timeout
         while loop.time() < end:
             try:
-                m = await asyncio.wait_for(ws.recv(), timeout=end - loop.time())
+                message = await asyncio.wait_for(ws.recv(), timeout=end - loop.time())
             except asyncio.TimeoutError:
                 break
-            chunk = m if isinstance(m, str) else m.decode(errors="replace")
+            chunk = message if isinstance(message, str) else message.decode(errors="replace")
             out += chunk
+            if on_output:
+                on_output(chunk)
             if echo:
                 sys.stdout.write(clean(chunk))
                 sys.stdout.flush()
@@ -100,10 +104,12 @@ class Repl:
         """Stop code.py and enter the REPL. Returns the output."""
         return asyncio.run(session(self.dev, INTERRUPT, timeout, echo=self.echo))
 
-    def run(self, code, timeout=20):
+    def run(self, code, timeout=20, on_output=None):
         """Run code in paste mode. Returns the output, up to the prompt, or
-        what came within timeout seconds."""
-        return asyncio.run(session(self.dev, paste(code), timeout, echo=self.echo))
+        what came within timeout seconds, and hands each chunk to on_output
+        as it comes."""
+        return asyncio.run(session(self.dev, paste(code), timeout, echo=self.echo,
+                                   on_output=on_output))
 
     def reload(self, timeout=20):
         """Ctrl-D: soft-reboot, which runs code.py again."""
@@ -112,32 +118,35 @@ class Repl:
 
 
 def main():
-    p = argparse.ArgumentParser(description="Drive a device's REPL over the web-workflow "
-                                            "serial websocket.")
-    p.add_argument("device")
-    p.add_argument("code", nargs="?")
-    p.add_argument("--interrupt", action="store_true")
-    p.add_argument("--reload", action="store_true")
-    p.add_argument("--put")
-    p.add_argument("--timeout", type=float, default=20)
-    a = p.parse_args()
-    dev = device(a.device)
+    parser = argparse.ArgumentParser(description="Drive a device's REPL over the "
+                                                 "web-workflow serial websocket.")
+    parser.add_argument("device", help="the device's name (or host) in devices.json")
+    parser.add_argument("code", nargs="?", help="code to run in paste mode")
+    parser.add_argument("--interrupt", action="store_true",
+                        help="stop code.py and enter the REPL")
+    parser.add_argument("--reload", action="store_true", help="Ctrl-D: restart code.py")
+    parser.add_argument("--put", help="copy a file to the device root")
+    parser.add_argument("--timeout", type=float, default=20)
+    args = parser.parse_args()
+    if not (args.code or args.interrupt or args.reload or args.put):
+        parser.error("give code to run, --interrupt, --reload or --put")
+    dev = device(args.device)
     repl = Repl(dev)
-    if a.put:
+    if args.put:
         import requests
 
-        path = Path(a.put)
-        r = requests.put(f"http://{dev['host']}/fs/{path.name}", auth=("", dev["password"]),
-                         data=path.read_bytes(), timeout=10)
-        print(r.status_code, r.reason)
+        path = Path(args.put)
+        response = requests.put(f"http://{dev['host']}/fs/{path.name}",
+                                auth=("", dev["password"]), data=path.read_bytes(), timeout=10)
+        print(response.status_code, response.reason)
         return
-    if a.interrupt:
-        repl.interrupt(a.timeout)
-    elif a.reload:
-        repl.reload(a.timeout)
+    if args.interrupt:
+        repl.interrupt(args.timeout)
+    elif args.reload:
+        repl.reload(args.timeout)
         return
     else:
-        out = repl.run(a.code, a.timeout)
+        out = repl.run(args.code, args.timeout)
         print()
         if has_traceback(out):
             sys.exit(1)
