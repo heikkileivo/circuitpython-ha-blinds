@@ -93,6 +93,10 @@ class Onboarding:
         # The found servo's ID, once a scan found it.
         self._id = None
 
+    def close(self):
+        """Free the UART's pins."""
+        self._uart.deinit()
+
     def onboard(self, role):
         """Set up the one servo on the bus for role, "lift" or "tilt": scan
         for it, identify it, then write its settings, in the order that
