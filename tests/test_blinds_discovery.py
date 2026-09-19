@@ -89,10 +89,15 @@ class BlindsDiscoveryTest(unittest.TestCase):
         self.assertEqual(cause["name"], "Reset cause")
         self.assertEqual(cause["entity_category"], "diagnostic")
         self.assertEqual(cause["device_class"], "enum")
-        # As allocated in #14; "unknown" is left out, as HA takes it as no value.
+        # As allocated in #14, plus one per safe-mode reason (#104); "unknown"
+        # is left out, as HA takes it as no value.
         self.assertCountEqual(cause["options"], [
             "power_on", "reset_pin", "watchdog", "software", "deep_sleep_alarm",
-            "brownout", "other_safe_mode", "mqtt_escalation", "restart_loop", "other"])
+            "brownout", "other_safe_mode", "mqtt_escalation", "restart_loop", "other",
+            "safe_mode_flash_write_fail", "safe_mode_gc_alloc_outside_vm",
+            "safe_mode_hard_fault", "safe_mode_interrupt_error", "safe_mode_nlr_jump_fail",
+            "safe_mode_no_heap", "safe_mode_programmatic", "safe_mode_sdk_fatal_error",
+            "safe_mode_stack_overflow", "safe_mode_watchdog"])
         self.assertEqual(cause["state_topic"], "blinds_f412fa448000/reset_cause/state")
 
     def test_servo_min_voltage_is_a_diagnostic_voltage_measurement(self):

@@ -37,10 +37,11 @@ _REASONS = ("NONE", "BROWNOUT", "FLASH_WRITE_FAIL", "GC_ALLOC_OUTSIDE_VM", "HARD
 def decision(reason):
     """What to do in safe mode, given the name of its reason, such as
     "BROWNOUT". Returns whether to stop the lift, the cause to restart with,
-    and how long to wait before restarting, in seconds."""
+    and how long to wait before restarting, in seconds. The cause carries
+    the reason, so the next boot publishes why."""
     if reason == "BROWNOUT":
         return True, reset_cause.BROWNOUT, WAIT_S
-    return True, reset_cause.OTHER_SAFE_MODE, WAIT_S
+    return True, reset_cause.SAFE_MODE.get(reason, reset_cause.OTHER_SAFE_MODE), WAIT_S
 
 
 def recover():

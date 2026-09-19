@@ -11,8 +11,8 @@ constant. It must be exactly what packet.py sends to write duty 0.
 import unittest
 
 from packet import Address, Reader
-from reset_cause import boot_decision, record
-from safemode import STOP_LIFT, decision
+from reset_cause import OPTIONS, boot_decision, record
+from safemode import _REASONS, STOP_LIFT, decision
 from servo_health import LIFT_ID
 from tests.test_packet import FakeUart
 
@@ -30,12 +30,25 @@ class DecisionTest(unittest.TestCase):
     def test_a_brownout_stops_the_lift_and_restarts_as_brownout_after_30_s(self):
         self.assertEqual(recovery("BROWNOUT"), (True, "brownout", 30))
 
+    def test_each_named_reason_stops_the_lift_and_restarts_as_its_own_cause_after_30_s(self):
+        # PROGRAMMATIC is how the stage 5 check enters safe mode. WATCHDOG is
+        # CircuitPython's internal watchdog, not the chip's watchdog reset.
+        for reason in ("FLASH_WRITE_FAIL", "GC_ALLOC_OUTSIDE_VM", "HARD_FAULT",
+                       "INTERRUPT_ERROR", "NLR_JUMP_FAIL", "NO_HEAP", "PROGRAMMATIC",
+                       "SDK_FATAL_ERROR", "STACK_OVERFLOW", "WATCHDOG"):
+            with self.subTest(reason=reason):
+                self.assertEqual(recovery(reason), (True, "safe_mode_" + reason.lower(), 30))
+
     def test_any_other_reason_stops_the_lift_and_restarts_as_other_safe_mode_after_30_s(self):
-        # PROGRAMMATIC is how the stage 5 check enters safe mode.
-        for reason in ("PROGRAMMATIC", "HARD_FAULT", "STACK_OVERFLOW", "WATCHDOG",
-                       "SOMETHING_NEW"):
+        # UNKNOWN is what _reason() returns when no member matches.
+        for reason in ("UNKNOWN", "SOMETHING_NEW", "NO_CIRCUITPY"):
             with self.subTest(reason=reason):
                 self.assertEqual(recovery(reason), (True, "other_safe_mode", 30))
+
+    def test_every_cause_is_an_option_of_the_entity(self):
+        for reason in _REASONS + ("UNKNOWN",):
+            with self.subTest(reason=reason):
+                self.assertIn(recovery(reason)[1], OPTIONS)
 
 
 class StopPacketTest(unittest.TestCase):
