@@ -55,6 +55,9 @@ WIFI_CONNECT_TIMEOUT_S = 8
 WATCHDOG_FEED_S = 1
 # The restart loop runs main() again this long after it fails.
 RESTART_LOOP_DELAY_S = 10
+# The CPU's die temperature is published this often, in seconds. It moves
+# slowly: the sun takes hours to heat the window cavity (#125).
+CPU_TEMP_PERIOD_S = 60
 # The escalation window, in seconds: the blind restarts once its liveness
 # echo has been missing this long. A run of main() that lasts longer resets
 # the restart loop's count.
@@ -163,6 +166,28 @@ async def publish_uptime(mqtt, disc):
         publish_if_connected(mqtt,disc.topic("uptime_seconds", "state"), uptime)
         publish_if_connected(mqtt,disc.topic("reconnects", "state"), mqtt.reconnects, retain=True)
         await asyncio.sleep(10)
+
+
+async def publish_cpu_temperature(mqtt, disc):
+    """
+    Publish the CPU's die temperature every minute, retained, so a reading is
+    there right after a reconnect.
+
+    The servos' temperatures measure the cavity between the window panes; this
+    measures the board, which is what stops when the sun heats the cavity
+    (#125). A chip without the sensor, or a failed read, publishes nothing
+    rather than ending the task and with it main().
+    """
+    while True:
+        try:
+            temperature = microcontroller.cpu.temperature
+        except Exception as e:
+            print(f"Failed to read the CPU temperature: {e!r}")
+            temperature = None
+        if temperature is not None:
+            publish_if_connected(mqtt, disc.topic("cpu_temp", "state"),
+                                 round(temperature, 1), retain=True)
+        await asyncio.sleep(CPU_TEMP_PERIOD_S)
 
 
 async def service_mqtt(mqtt, blinds, socket_timeout):
@@ -468,6 +493,7 @@ async def run_blind(reader, end_sensors):
     tasks.append(asyncio.create_task(service_mqtt(mqtt, blinds, socket_timeout)))
     tasks.append(asyncio.create_task(show_status(blinds, mqtt, lambda: health)))
     tasks.append(asyncio.create_task(publish_uptime(mqtt, disc)))
+    tasks.append(asyncio.create_task(publish_cpu_temperature(mqtt, disc)))
     tasks.append(asyncio.create_task(read_servos_while_idle(blinds, publish_servo_health)))
     tasks.append(asyncio.create_task(fail_on_unconfirmed_stop()))
 

@@ -82,6 +82,20 @@ class BlindsDiscoveryTest(unittest.TestCase):
         self.assertEqual(health["value_template"], "{{ value_json.health }}")
         self.assertEqual(health["json_attributes_topic"], health["state_topic"])
 
+    def test_cpu_temperature_is_a_diagnostic_sensor_on_its_own_short_topic(self):
+        # The board's own temperature, next to the servos' cavity readings
+        # (#125). The key is "cpu_temp", not "cpu_temperature": the payload
+        # has about 30 bytes left against BUDGET_BYTES.
+        cpu = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_cpu_temp"]
+
+        self.assertEqual(cpu["p"], "sensor")
+        self.assertEqual(cpu["name"], "CPU temperature")
+        self.assertEqual(cpu["entity_category"], "diagnostic")
+        self.assertEqual(cpu["device_class"], "temperature")
+        self.assertEqual(cpu["unit_of_measurement"], "°C")
+        self.assertEqual(cpu["state_class"], "measurement")
+        self.assertEqual(cpu["state_topic"], "blinds_f412fa448000/cpu_temp/state")
+
     def test_reset_cause_is_a_diagnostic_enum_of_the_chip_reasons_and_firmware_causes(self):
         cause = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_reset_cause"]
 
