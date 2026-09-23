@@ -4,6 +4,14 @@ CIRCUITPY_WEB_API_PASSWORD = "your_web_api_password"
 CIRCUITPY_WEB_API_PORT = 80
 CIRCUITPY_WEB_INSTANCE_NAME = "water-meter"
 
+# Optional. The device's name on the network: what the router's client list
+# shows and what mDNS answers to. Letters, digits and hyphens only. Without
+# it CircuitPython picks one: through 9.1.x each board derives its own from
+# the chip, such as cpy-4fa480, but from 9.2.0 every Espressif board defaults
+# to "espressif", so all five would share a name. Read on every version the
+# fleet runs, unlike CIRCUITPY_WIFI_HOSTNAME, which needs 10.3.0.
+# hostname = "water-meter"
+
 device_name = "Water Meter"
 counter_name = "water"
 sensor_pin = "board.D1"              # ANALOG output from the optical pickup

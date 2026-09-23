@@ -78,14 +78,26 @@ def auth(device):
 
 
 def check_reachable(device):
+    """Whether the device's web workflow answers, printing what it says it
+    is. The version is worth seeing on every deploy while the fleet is part
+    way through the CircuitPython upgrade (#128): it's the only place a
+    device that came back on the wrong firmware would show up."""
     url = f"http://{device['host']}/cp/version.json"
     try:
         r = requests.get(url, auth=auth(device), timeout=TIMEOUT)
         r.raise_for_status()
-        return True
     except requests.RequestException as e:
         print(f"  Device unreachable: {e}")
         return False
+    try:
+        version = r.json()
+    except ValueError:
+        # Reachable is what matters; the body is only for the report.
+        print("  CircuitPython version: unreadable")
+        return True
+    print(f"  CircuitPython {version.get('version', '?')}"
+          f" on {version.get('board_id', '?')}, web API {version.get('web_api_version', '?')}")
+    return True
 
 
 def fs_url(device, filename=""):
