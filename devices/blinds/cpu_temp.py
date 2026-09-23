@@ -1,12 +1,13 @@
 """Whether a CPU die temperature is a reading or the sensor's latch bug.
 
-ESP-IDF 5.2.2, which CircuitPython 9.1.1 pins, shares one range index
+ESP-IDF 5.2.2, which CircuitPython 9.1.1 and 9.1.3 both pin, shares one range index
 between the temperature-sensor driver and the Wi-Fi PHY. The PHY can move
 that index while `microcontroller.cpu.temperature` reprograms the hardware
 range without it, and then every later read is 55.76 °C low: two range steps
 of 27.88 °C. The wrong value lands inside the range the stale index claims,
-so the driver never re-ranges and only a reset clears it (#127, fixed
-upstream in ESP-IDF 5.5).
+so the driver never re-ranges. A `microcontroller.reset()` does not clear it
+either: Left still read 55.76 °C low after one, so the stuck state is not
+only in the driver's globals (#127, fixed upstream in ESP-IDF 5.5).
 
 A fixed floor alone would not do. Left latched while idle and read -28 °C,
 which any floor catches; the same latch on the hot afternoon this sensor

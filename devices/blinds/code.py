@@ -180,8 +180,8 @@ async def publish_cpu_temperature(mqtt, disc, current_cavity):
     rather than ending the task and with it main().
 
     So does a latched sensor, which ESP-IDF 5.2.2 leaves reading 55.76 °C low
-    until the next reset (#127). current_cavity returns the air around the
-    board, which the reading has to beat; see cpu_temp.
+    and which a software reset does not clear (#127). current_cavity returns
+    the air around the board, which the reading has to beat; see cpu_temp.
     """
     while True:
         try:
@@ -193,7 +193,7 @@ async def publish_cpu_temperature(mqtt, disc, current_cavity):
             cavity = current_cavity()
             if not cpu_temp.plausible(temperature, cavity):
                 print(f"Dropping a CPU temperature of {temperature} against a cavity of {cavity}:"
-                      " the sensor has latched low, and only a reset clears it (#127).")
+                      " the sensor has latched low (#127).")
                 temperature = None
         if temperature is not None:
             publish_if_connected(mqtt, disc.topic("cpu_temp", "state"),
