@@ -1,4 +1,5 @@
 import env
+import wifi_setup
 import asyncio
 import time
 import wifi
@@ -56,6 +57,7 @@ async def connect_wifi():
     
     ssid = env.text("CIRCUITPY_WIFI_SSID")
     pwd = env.text("CIRCUITPY_WIFI_PASSWORD")
+    wifi_setup.apply_hostname(wifi.radio, env.text("hostname"))
 
     print("Connecting Wifi...")    
     pixel[0] = Color.BLUE
