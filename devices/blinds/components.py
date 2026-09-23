@@ -93,6 +93,18 @@ def add_components(disc):
             "state_topic": health_topic,
             "value_template": "{{ value_json." + servo + ".temperature }}",
         })
+    # The chip's own die temperature. The servos' temperatures measure the
+    # cavity between the window panes, a few centimetres from the board; this
+    # measures the board itself, which is what dies when the sun heats the
+    # cavity (#125). The key is short: the payload has little headroom left
+    # against #14's budget.
+    disc.add_component("cpu_temp", "sensor", {
+        "name": "CPU temperature",
+        "entity_category": "diagnostic",
+        "device_class": "temperature",
+        "unit_of_measurement": "°C",
+        "state_class": "measurement",
+    })
     # Dropped entities. The removals stay in every payload for good, so they
     # take effect whichever blind boots first and after any rollback.
     disc.remove_component("uptime", "sensor")

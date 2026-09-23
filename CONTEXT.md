@@ -70,6 +70,10 @@ _Avoid_: Jam, stuck, blocked
 Whether a blind's servos answer and report no error, as published to Home Assistant: ok, no reply or error, taken as the worse of the lift and tilt servos.
 _Avoid_: Servo status, servo fault, servo diagnostics (the voltage, temperature and load figures behind it)
 
+**Cavity temperature**:
+The air between the window panes, where the servos sit, as read from a servo's own temperature register. The sun heats it to 50 °C and beyond on a clear afternoon. It is not the board's temperature: the CPU temperature, read from the chip's die, is the separate figure that says how hot the controller itself runs (#125).
+_Avoid_: Ambient, room temperature, servo temperature (when meaning the air rather than one servo's reading)
+
 **Attention**:
 A condition that makes a blind's status LED blink: servo health no reply or error, MQTT disconnected, or cover state unknown. When several hold, the most severe one shows, in that order.
 _Avoid_: Trouble, fault, alarm
