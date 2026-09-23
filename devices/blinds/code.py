@@ -532,7 +532,12 @@ while True:
         print("main() keeps failing, restarting.")
         reset_cause.restart(reset_cause.RESTART_LOOP)
     # asyncio.run() leaves the failed run's tasks queued: drop them, so the
-    # next run doesn't run them too.
+    # next run doesn't run them too. It also clears asyncio's cur_task, which
+    # from asyncio 3.1.1 must be None or run() raises RuntimeError instead of
+    # running. A failure inside the task is cleared by asyncio itself, but one
+    # that escapes its handler isn't, and would make every later run fail. So
+    # this stays, and stays before the next run(). tests/test_restart_loop.py
+    # checks that it does.
     asyncio.new_event_loop()
     gc.collect()
     print(f"Running main() again in {RESTART_LOOP_DELAY_S} s...")
