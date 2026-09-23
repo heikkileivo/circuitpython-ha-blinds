@@ -1,6 +1,5 @@
 import time, gc, os, sys, json, traceback
 import env
-import wifi_setup
 from time import sleep
 import microcontroller
 from watchdog import WatchDogMode
@@ -123,7 +122,6 @@ async def connect_wifi():
         pixel[0] = Color.BLUE
         ssid = env.text("CIRCUITPY_WIFI_SSID")
         pwd = env.text("CIRCUITPY_WIFI_PASSWORD")
-        wifi_setup.apply_hostname(wifi.radio, env.text("hostname"))
         try:
             for network in wifi.radio.start_scanning_networks():
                 print(f"\t{network.ssid}\t\tRSSI: {network.rssi:d}\tChannel: {network.channel:d}")

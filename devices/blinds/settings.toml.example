@@ -5,12 +5,22 @@ CIRCUITPY_WEB_API_PORT = 80
 CIRCUITPY_WEB_INSTANCE_NAME = "upstairs-living-room-right-blinds"
 
 # Optional. The device's name on the network: what the router's client list
-# shows and what mDNS answers to. Letters, digits and hyphens only. Without
-# it CircuitPython picks one: through 9.1.x each board derives its own from
-# the chip, such as cpy-4fa480, but from 9.2.0 every Espressif board defaults
-# to "espressif", so all five would share a name. Read on every version the
-# fleet runs, unlike CIRCUITPY_WIFI_HOSTNAME, which needs 10.3.0.
-# hostname = "upstairs-living-room-right-blinds"
+# shows and what mDNS answers to. Letters, digits and hyphens only, 32 bytes
+# at most.
+#
+# It has to be CIRCUITPY_WIFI_HOSTNAME, which needs CircuitPython 10.3.0 or
+# later, and it only takes effect after a full reboot - reloading code.py is
+# not enough, because the web workflow's association survives a reload.
+# Setting wifi.radio.hostname from code.py cannot work: the firmware brings
+# WiFi up itself at boot, before code.py runs, and ESP-IDF only reflects a
+# hostname change at the next reassociation, not on the lease in hand.
+#
+# Left unset, CircuitPython uses cpy-<board id>-<mac> trimmed to 32 bytes,
+# which on a TinyS3 is cpy-edmaker_tinys3-<mac>. That is already unique per
+# board, so this setting is cosmetic. (Through 9.1.x the default was the
+# board's own UMTinyS3, which every TinyS3 shared - hence DHCP reservations
+# by MAC, which stay correct either way.)
+# CIRCUITPY_WIFI_HOSTNAME = "upstairs-living-room-right-blinds"
 
 device_name = "Upstairs Living Room Right Blinds"
 tilt_scale = 10.0

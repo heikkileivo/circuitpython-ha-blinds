@@ -1,0 +1,86 @@
+Measured flow rate: 0.5L / 15s = 2L/min
+Measured blip rate: 10 blips/7s = 1.4 blips/s
+
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 2  total=   13
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 1  total=   15
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 3  total=   18
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 1  total=   20
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 2  total=   23
+swing= 4801 ( 7.3%)  base=58427  th=[57936..58918]  gate=FLOW  flips/s= 1  total=   25
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 3  total=   28
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 2  total=   30
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 3  total=   33
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 1  total=   35
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 2  total=   38
+swing= 4816 ( 7.3%)  base=58420  th=[57929..58911]  gate=FLOW  flips/s= 2  total=   40
+swing= 4816 ( 7.3%)  base=58420  th=[57929..58911]  gate=FLOW  flips/s= 3  total=   43
+swing= 4816 ( 7.3%)  base=58420  th=[57929..58911]  gate=FLOW  flips/s= 1  total=   45
+swing= 4796 ( 7.3%)  base=58430  th=[57939..58921]  gate=FLOW  flips/s= 3  total=   48
+swing= 4801 ( 7.3%)  base=58427  th=[57936..58918]  gate=FLOW  flips/s= 2  total=   50
+swing= 4801 ( 7.3%)  base=58427  th=[57936..58918]  gate=FLOW  flips/s= 2  total=   53
+swing= 4801 ( 7.3%)  base=58427  th=[57936..58918]  gate=FLOW  flips/s= 2  total=   55
+swing= 4801 ( 7.3%)  base=58427  th=[57936..58918]  gate=FLOW  flips/s= 2  total=   58
+
+
+Transition to flow/no flow:
+
+swing=  347 ( 0.5%)  base=58216  th=[57725..58707]  gate= --   flips/s= 0  total=    0
+swing=  322 ( 0.5%)  base=58204  th=[57713..58695]  gate= --   flips/s= 0  total=    0
+swing=  322 ( 0.5%)  base=58204  th=[57713..58695]  gate= --   flips/s= 0  total=    0
+swing= 2214 ( 3.4%)  base=57308  th=[56817..57799]  gate= --   flips/s= 0  total=    0
+swing= 3645 ( 5.6%)  base=57903  th=[57412..58394]  gate=FLOW  flips/s= 5  total=    5
+swing= 3660 ( 5.6%)  base=57901  th=[57410..58392]  gate=FLOW  flips/s= 5  total=   11
+swing= 4796 ( 7.3%)  base=58430  th=[57939..58921]  gate=FLOW  flips/s= 5  total=   17
+swing= 4836 ( 7.4%)  base=58410  th=[57919..58901]  gate=FLOW  flips/s= 5  total=   23
+swing= 4836 ( 7.4%)  base=58410  th=[57919..58901]  gate=FLOW  flips/s= 3  total=   26
+swing= 4836 ( 7.4%)  base=58410  th=[57919..58901]  gate=FLOW  flips/s= 1  total=   28
+swing= 4836 ( 7.4%)  base=58410  th=[57919..58901]  gate=FLOW  flips/s= 0  total=   28
+swing= 4836 ( 7.4%)  base=58410  th=[57919..58901]  gate=FLOW  flips/s= 0  total=   29
+swing= 4821 ( 7.4%)  base=58417  th=[57926..58908]  gate=FLOW  flips/s= 1  total=   30
+swing= 4821 ( 7.4%)  base=58417  th=[57926..58908]  gate=FLOW  flips/s= 0  total=   30
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 0  total=   30
+swing= 4826 ( 7.4%)  base=58415  th=[57924..58906]  gate=FLOW  flips/s= 0  total=   30
+swing= 3207 ( 4.9%)  base=57605  th=[57114..58096]  gate=FLOW  flips/s= 0  total=   31
+swing= 2780 ( 4.2%)  base=57392  th=[56901..57883]  gate=FLOW  flips/s= 0  total=   31
+swing= 3252 ( 5.0%)  base=57628  th=[57137..58119]  gate=FLOW  flips/s= 0  total=   31
+swing= 4459 ( 6.8%)  base=58598  th=[58107..59089]  gate=FLOW  flips/s= 0  total=   31
+swing= 3545 ( 5.4%)  base=59055  th=[58564..59546]  gate=FLOW  flips/s= 0  total=   31
+swing= 2552 ( 3.9%)  base=59552  th=[59061..60043]  gate=FLOW  flips/s= 0  total=   31
+swing= 1922 ( 2.9%)  base=59867  th=[59376..60358]  gate= --   flips/s= 0  total=   31
+swing= 1644 ( 2.5%)  base=60006  th=[59515..60497]  gate= --   flips/s= 0  total=   31
+swing= 1644 ( 2.5%)  base=60006  th=[59515..60497]  gate= --   flips/s= 0  total=   31
+
+
+Measured flow rate: 5L / 46s = 6.5L/s
+
+swing= 5248 ( 8.0%)  base=58169  th=[57678..58660]  gate=FLOW  flips/s= 7  total= 1072
+swing= 4617 ( 7.0%)  base=57853  th=[57362..58344]  gate=FLOW  flips/s= 8  total= 1081
+swing= 5293 ( 8.1%)  base=58181  th=[57690..58672]  gate=FLOW  flips/s= 8  total= 1090
+swing= 5293 ( 8.1%)  base=58181  th=[57690..58672]  gate=FLOW  flips/s= 8  total= 1098
+swing= 5293 ( 8.1%)  base=58181  th=[57690..58672]  gate=FLOW  flips/s= 7  total= 1106
+swing= 5293 ( 8.1%)  base=58181  th=[57690..58672]  gate=FLOW  flips/s= 9  total= 1115
+swing= 5293 ( 8.1%)  base=58181  th=[57690..58672]  gate=FLOW  flips/s= 9  total= 1124
+swing= 5293 ( 8.1%)  base=58181  th=[57690..58672]  gate=FLOW  flips/s= 8  total= 1132
+swing= 5303 ( 8.1%)  base=58176  th=[57685..58667]  gate=FLOW  flips/s= 8  total= 1141
+swing= 5303 ( 8.1%)  base=58176  th=[57685..58667]  gate=FLOW  flips/s= 7  total= 1149
+swing= 5303 ( 8.1%)  base=58176  th=[57685..58667]  gate=FLOW  flips/s= 8  total= 1158
+swing= 5303 ( 8.1%)  base=58176  th=[57685..58667]  gate=FLOW  flips/s= 8  total= 1166
+swing= 5278 ( 8.1%)  base=58189  th=[57698..58680]  gate=FLOW  flips/s= 9  total= 1175
+swing= 5278 ( 8.1%)  base=58189  th=[57698..58680]  gate=FLOW  flips/s= 7  total= 1183
+swing= 5278 ( 8.1%)  base=58189  th=[57698..58680]  gate=FLOW  flips/s= 8  total= 1192
+swing= 5278 ( 8.1%)  base=58189  th=[57698..58680]  gate=FLOW  flips/s= 8  total= 1200
+swing= 5278 ( 8.1%)  base=58189  th=[57698..58680]  gate=FLOW  flips/s= 8  total= 1208
+swing= 5278 ( 8.1%)  base=58189  th=[57698..58680]  gate=FLOW  flips/s= 9  total= 1217
+swing= 5268 ( 8.0%)  base=58194  th=[57703..58685]  gate=FLOW  flips/s= 9  total= 1226
+swing= 5327 ( 8.1%)  base=58164  th=[57673..58655]  gate=FLOW  flips/s= 8  total= 1234
+
+Measured flow rate: 5L / 20s = 15L/min
+
+swing= 5466 ( 8.3%)  base=58095  th=[57604..58586]  gate=FLOW  flips/s=21  total=   97
+swing= 5461 ( 8.3%)  base=58097  th=[57606..58588]  gate=FLOW  flips/s=19  total=  117
+swing= 5461 ( 8.3%)  base=58097  th=[57606..58588]  gate=FLOW  flips/s=20  total=  137
+swing= 5466 ( 8.3%)  base=58095  th=[57604..58586]  gate=FLOW  flips/s=19  total=  157
+swing= 5466 ( 8.3%)  base=58095  th=[57604..58586]  gate=FLOW  flips/s=19  total=  177
+swing= 5466 ( 8.3%)  base=58095  th=[57604..58586]  gate=FLOW  flips/s=21  total=  198
+swing= 5466 ( 8.3%)  base=58095  th=[57604..58586]  gate=FLOW  flips/s=20  total=  218
+swing= 5481 ( 8.4%)  base=58087  th=[57596..58578]  gate=FLOW  flips/s=20  total=  239
