@@ -1,4 +1,5 @@
 import time, gc, os, sys, json, traceback
+import env
 from time import sleep
 import microcontroller
 from watchdog import WatchDogMode
@@ -41,7 +42,7 @@ except Exception as e:
 MQTT_SERVICE_SLEEP_S = 0.25
 # While the blind opens or closes, loop() runs at most this often, in ms, so
 # the end sensor and stall checks lose little time (#55).
-MQTT_MOVING_LOOP_MS = os.getenv("mqtt_moving_loop_ms", 1000)
+MQTT_MOVING_LOOP_MS = env.integer("mqtt_moving_loop_ms", 1000)
 # Meanwhile the task checks this often whether loop() is due, as it may block
 # only right after some of the lift's samples: about as often as they come,
 # by default.
@@ -62,7 +63,7 @@ CPU_TEMP_PERIOD_S = 60
 # The escalation window, in seconds: the blind restarts once its liveness
 # echo has been missing this long. A run of main() that lasts longer resets
 # the restart loop's count.
-ESCALATION_S = os.getenv("mqtt_escalation_s", recovery.WINDOW_MS // 1000)
+ESCALATION_S = env.integer("mqtt_escalation_s", recovery.WINDOW_MS // 1000)
 
 # After a move, the supply gets this long to recover before the idle read.
 SERVO_SETTLE_S = 2
@@ -119,8 +120,8 @@ async def connect_wifi():
     while True:
         print("Connecting Wifi...")
         pixel[0] = Color.BLUE
-        ssid = os.getenv("CIRCUITPY_WIFI_SSID")
-        pwd = os.getenv("CIRCUITPY_WIFI_PASSWORD")
+        ssid = env.text("CIRCUITPY_WIFI_SSID")
+        pwd = env.text("CIRCUITPY_WIFI_PASSWORD")
         try:
             for network in wifi.radio.start_scanning_networks():
                 print(f"\t{network.ssid}\t\tRSSI: {network.rssi:d}\tChannel: {network.channel:d}")
@@ -361,8 +362,8 @@ async def run_blind(reader, end_sensors):
     # Turn on the power to the NeoPixel
     tinys3.set_pixel_power(True)
 
-    device_name = os.getenv("device_name", "Blinds")
-    tilt_scale = os.getenv("tilt_scale", 10.0)
+    device_name = env.text("device_name", "Blinds")
+    tilt_scale = env.number("tilt_scale", 10.0)
 
     disc = blinds_discovery(device_name)
 
@@ -418,8 +419,7 @@ async def run_blind(reader, end_sensors):
             except Exception as e:
                 print(f"Failed to parse tilt: {e!r}")
 
-    # settings.toml takes no floats, so a fractional value must be quoted.
-    socket_timeout = float(os.getenv("mqtt_socket_timeout", 0.25))
+    socket_timeout = env.number("mqtt_socket_timeout", 0.25)
     mqtt = Mqtt(on_connect_callback=on_connect,
                 on_message_callback=on_message,
                 client_id=disc.device_id,
@@ -429,7 +429,7 @@ async def run_blind(reader, end_sensors):
                 connect_retries=1,
                 # The blind's own uptime, which publish_uptime() sends.
                 echo_topic=disc.topic("uptime_seconds", "state"),
-                echo_timeout=float(os.getenv("mqtt_echo_timeout", 45)),
+                echo_timeout=env.number("mqtt_echo_timeout", 45),
                 paused=lambda: blinds.is_moving,
                 availability_topic=disc.availability_topic)
 
@@ -518,7 +518,7 @@ async def run_blind(reader, end_sensors):
 # main() only ends by failing. The restart loop runs it again, until it fails
 # restart_loop_max times in a row, each run shorter than the escalation
 # window; then the blind restarts.
-restart_loop = recovery.RestartLoop(os.getenv("restart_loop_max", recovery.MAX_FAILURES),
+restart_loop = recovery.RestartLoop(env.integer("restart_loop_max", recovery.MAX_FAILURES),
                                     ESCALATION_S * 1000)
 while True:
     started_ms = now_ms()

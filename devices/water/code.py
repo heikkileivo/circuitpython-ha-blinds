@@ -1,4 +1,5 @@
 import time, gc, os, ssl
+import env
 import board
 import supervisor
 import analogio
@@ -145,17 +146,17 @@ def create_tasks(state, disc,
                  on_connection_ok,
                  on_disconnected,
                  on_connected):
-    name = os.getenv("counter_name", "water")
-    pulses_per_unit = os.getenv("pulses_per_unit", 81)
-    interval = os.getenv("report_interval", 60)
-    pin = eval(os.getenv("sensor_pin", "board.D1"))
+    name = env.text("counter_name", "water")
+    pulses_per_unit = env.integer("pulses_per_unit", 81)
+    interval = env.integer("report_interval", 60)
+    pin = eval(env.text("sensor_pin", "board.D1"))
 
-    env_ms = int(os.getenv("env_ms", 4500))
-    sub_window_ms = int(os.getenv("sub_window_ms", 250))
-    sample_ms = int(os.getenv("sample_ms", 2))
-    oversample = int(os.getenv("oversample", 4))
-    min_swing_pct = float(os.getenv("min_swing_pct", 1.5))
-    hyst_pct = float(os.getenv("hyst_pct", 1.0))
+    env_ms = env.integer("env_ms", 4500)
+    sub_window_ms = env.integer("sub_window_ms", 250)
+    sample_ms = env.integer("sample_ms", 2)
+    oversample = env.integer("oversample", 4)
+    min_swing_pct = env.number("min_swing_pct", 1.5)
+    hyst_pct = env.number("hyst_pct", 1.0)
 
     env_windows = max(1, env_ms // sub_window_ms)
     min_swing = int(min_swing_pct / 100 * FULL_SCALE)
@@ -197,7 +198,7 @@ async def main():
 
     tinys3.set_pixel_power(True)
 
-    device_name = os.getenv("device_name", "Water Meter")
+    device_name = env.text("device_name", "Water Meter")
 
     disc = HADiscovery(device_name, "CircuitPython Water Meter", "water")
     disc.add_component("flow_rate", "sensor", {

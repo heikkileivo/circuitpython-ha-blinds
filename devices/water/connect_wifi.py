@@ -1,4 +1,4 @@
-import os
+import env
 import asyncio
 import time
 import wifi
@@ -54,8 +54,8 @@ async def connect_wifi():
         print(f"Already connected to wifi.")
         return True
     
-    ssid = os.getenv("CIRCUITPY_WIFI_SSID")
-    pwd = os.getenv("CIRCUITPY_WIFI_PASSWORD")
+    ssid = env.text("CIRCUITPY_WIFI_SSID")
+    pwd = env.text("CIRCUITPY_WIFI_PASSWORD")
 
     print("Connecting Wifi...")    
     pixel[0] = Color.BLUE

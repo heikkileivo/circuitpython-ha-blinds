@@ -17,7 +17,7 @@ from time import monotonic_ns, sleep
 import microcontroller
 import asyncio
 import math
-import os
+import env
 
 def now_ms():
     """The time in ms for the servo waits. monotonic() loses precision within
@@ -185,7 +185,7 @@ class Servo:
             print(f"Starting servo failed: {e}")
             return False
 
-        deadline_ms = os.getenv("lift_start_deadline_ms", servo_wait.START_DEADLINE_MS)
+        deadline_ms = env.integer("lift_start_deadline_ms", servo_wait.START_DEADLINE_MS)
         if not await servo_wait.until_moving(lambda: self.is_moving, now_ms, deadline_ms):
             print(f"Servo {self._id} didn't start moving within {deadline_ms} ms.")
             return False
@@ -200,7 +200,7 @@ class Servo:
         print(f"Stopping servo...")
         duty_0_outcome = self._write_duty_0()
         if duty_0_outcome == lift_stop.CONFIRMED:
-            deadline_ms = os.getenv("lift_stop_deadline_ms", servo_wait.STOP_DEADLINE_MS)
+            deadline_ms = env.integer("lift_stop_deadline_ms", servo_wait.STOP_DEADLINE_MS)
             if not await servo_wait.until_still(lambda: self.is_moving, now_ms, deadline_ms):
                 print(f"Servo {self._id} didn't stop moving within {deadline_ms} ms.")
                 # It may have missed the first duty 0.
@@ -240,11 +240,11 @@ async def track_travel(servo, finish_event, tracker, sample_ms, on_sample, on_st
     if it stalls, then call on_stall."""
     sample_s = sample_ms / 1000
     detector = stall.StallDetector(
-        window_ms=os.getenv("stall_window_ms", stall.WINDOW_MS),
-        max_speed=os.getenv("stall_max_speed", stall.MAX_SPEED),
-        max_angle_change=os.getenv("stall_max_angle_change", stall.MAX_ANGLE_CHANGE),
-        grace_ms=os.getenv("stall_grace_ms", stall.GRACE_MS),
-        dead_zone_window_ms=os.getenv("stall_dead_zone_window_ms", stall.DEAD_ZONE_WINDOW_MS))
+        window_ms=env.integer("stall_window_ms", stall.WINDOW_MS),
+        max_speed=env.integer("stall_max_speed", stall.MAX_SPEED),
+        max_angle_change=env.integer("stall_max_angle_change", stall.MAX_ANGLE_CHANGE),
+        grace_ms=env.integer("stall_grace_ms", stall.GRACE_MS),
+        dead_zone_window_ms=env.integer("stall_dead_zone_window_ms", stall.DEAD_ZONE_WINDOW_MS))
     print(f"Tracking travel for servo {servo.id}...")
     while True:
         # monotonic() loses precision within hours of uptime; monotonic_ns() doesn't.
@@ -311,8 +311,8 @@ class Blinds:
             # So does the travel, which an active end sensor re-anchors. Until
             # the full travel is learned, the window height over the
             # spindle's circumference stands in for it.
-            h = os.getenv("window_height", 1800.0)
-            d = os.getenv("spindle_diameter", 20.0)
+            h = env.number("window_height", 1800.0)
+            d = env.number("spindle_diameter", 20.0)
             self._tracker = travel.at_boot(up_active, down_active, self._store.state,
                                            self._store.travel, self._store.full_travel,
                                            h / (d * math.pi))
@@ -321,7 +321,7 @@ class Blinds:
             # code.py builds the blind after the boot re-init has stopped
             # the servos, and before the first connect publishes the tilt.
             self._tilt = read_at_boot(reader, tilt_scale)
-            self._speed = os.getenv("default_speed", 800)
+            self._speed = env.integer("default_speed", 800)
             self._servo_position = 0
             self._revolutions = 0
             self._opened = 0
@@ -390,10 +390,10 @@ class Blinds:
             servo = self._tilt_servo
             servo.enable_torque = True
             servo.position = value
-            deadline_ms = os.getenv("tilt_deadline_ms", servo_wait.TILT_DEADLINE_MS)
+            deadline_ms = env.integer("tilt_deadline_ms", servo_wait.TILT_DEADLINE_MS)
             arrived = await servo_wait.until_still(
                 lambda: servo.is_moving, now_ms, deadline_ms,
-                os.getenv("tilt_rise_ms", servo_wait.TILT_RISE_MS))
+                env.integer("tilt_rise_ms", servo_wait.TILT_RISE_MS))
             if not arrived:
                 print(f"The tilt servo didn't arrive at {value} within {deadline_ms} ms.")
             if not servo.torque_off():
@@ -512,11 +512,9 @@ class Blinds:
             tracker = self._tracker
             # Planned from the cover state the move starts from, and the one
             # stored, which after an interrupted move keeps its direction.
-            # settings.toml takes no floats, so a fractional value must be
-            # quoted.
             plan = re_seat.Plan(end, state, self._store.state, tracker.travel, tracker.full_or_estimate,
-                                float(os.getenv("crawl_down_revs", re_seat.CRAWL_DOWN_REVS)),
-                                float(os.getenv("re_seat_revs", re_seat.RE_SEAT_REVS)))
+                                env.number("crawl_down_revs", re_seat.CRAWL_DOWN_REVS),
+                                env.number("re_seat_revs", re_seat.RE_SEAT_REVS))
             drive = plan.next(self._end_sensors.active(sensor))
             if drive is None:
                 print("Already at stopped state.")
@@ -603,7 +601,7 @@ class Blinds:
                         except Exception as e:
                             print(f"Failed to update the lift's duty: {e!r}")
 
-            sample_ms = os.getenv("lift_sample_ms", 50)
+            sample_ms = env.integer("lift_sample_ms", 50)
 
             def can_pause(pause_ms):
                 # A pause holds up the drive's samples, and, once it has
@@ -629,8 +627,7 @@ class Blinds:
                 if self._end_sensors.watch(sensor):
                     finish(cover_state.REACHED)
                 tracker.begin(drive.up, from_end and not drive.crawls)
-                # settings.toml takes no floats, so a fractional value must be quoted.
-                margin = float(os.getenv("travel_margin_revs", 2))
+                margin = env.number("travel_margin_revs", 2)
                 slow_speed = self._approach_speed(drive.up)
                 if drive.crawls:
                     speed = slow_speed
@@ -641,14 +638,14 @@ class Blinds:
                     # which can_pause goes by.
                     profile = speed_profile.Profile(
                         speed, slow_speed, approach_revs,
-                        soft_start_revs=float(os.getenv("soft_start_revs", speed_profile.SOFT_START_REVS)),
-                        soft_start_speed=os.getenv("soft_start_speed", speed_profile.SOFT_START_SPEED),
-                        min_speed=os.getenv("lift_min_speed", speed_profile.MIN_SPEED))
+                        soft_start_revs=env.number("soft_start_revs", speed_profile.SOFT_START_REVS),
+                        soft_start_speed=env.integer("soft_start_speed", speed_profile.SOFT_START_SPEED),
+                        min_speed=env.integer("lift_min_speed", speed_profile.MIN_SPEED))
                 if drive.revs is not None:
-                    timeout = os.getenv("crawl_timeout", 15)
+                    timeout = env.integer("crawl_timeout", 15)
                 elif drive.crawls or math.isnan(tracker.travel):
                     # All the way at approach speed takes longer.
-                    timeout = os.getenv("approach_timeout", 120)
+                    timeout = env.integer("approach_timeout", 120)
                 print(f"Travel {tracker.travel} of {tracker.full_or_estimate} revolutions, driving at {speed}.")
 
                 tasks.append(asyncio.create_task(
@@ -693,7 +690,7 @@ class Blinds:
                             # which the servo confirmed.
                             updates = speed_profile.Updates(
                                 start_duty, now_ms(),
-                                update_ms=os.getenv("speed_update_ms", speed_profile.UPDATE_MS))
+                                update_ms=env.integer("speed_update_ms", speed_profile.UPDATE_MS))
 
                 # Every task ends once finish_event is set.
                 await asyncio.gather(*tasks)
@@ -719,8 +716,8 @@ class Blinds:
             """The approach speed, as the duty for a drive up (negative) or
             down."""
             if up:
-                return -os.getenv("open_approach_speed", 500)
-            return os.getenv("close_approach_speed", 300)
+                return -env.integer("open_approach_speed", 500)
+            return env.integer("close_approach_speed", 300)
 
         async def _stop_lift(self):
             """Stop the lift with its stop sequence, which leaves it braking.
@@ -781,9 +778,9 @@ class Blinds:
             self.report_state()
             result = await self.operate(Blinds.POSITION_DOWN,                       # The end it moves toward, whose end sensor stops it
                                 self._speed,                              # Drive in negative direction
-                                float(os.getenv("close_approach_revs",     # Ramp down to the approach speed over the last this many revolutions
-                                                speed_profile.APPROACH_REVS)),
-                                os.getenv("close_timeout", 45),            # Timeout, with the travel known
+                                env.number("close_approach_revs",          # Ramp down to the approach speed over the last this many revolutions
+                                           speed_profile.APPROACH_REVS),
+                                env.integer("close_timeout", 45),            # Timeout, with the travel known
                                 state)                                   # The cover state it starts from
             # A close that didn't reach the end sensor gives up here. A tilt
             # that doesn't arrive at the end is a timeout, like any other.
@@ -804,9 +801,9 @@ class Blinds:
             self.report_state()
             result = await self.operate(Blinds.POSITION_UP,                         # The end it moves toward, whose end sensor stops it
                                 -self._speed,                               # Drive in positive direction
-                                float(os.getenv("open_approach_revs",      # Ramp down to the approach speed over the last this many revolutions
-                                                speed_profile.APPROACH_REVS)),
-                                os.getenv("open_timeout", 45),              # Timeout, with the travel known
+                                env.number("open_approach_revs",           # Ramp down to the approach speed over the last this many revolutions
+                                           speed_profile.APPROACH_REVS),
+                                env.integer("open_timeout", 45),              # Timeout, with the travel known
                                 state)                                   # The cover state it starts from
             self._position = cover_state.after_move(result, Blinds.POSITION_UP)
             self.report_state()
