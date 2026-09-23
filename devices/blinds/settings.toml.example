@@ -21,8 +21,9 @@ close_approach_speed = 300
 # speed the soft start begins at and the revolutions it rises to cruise over,
 # the slowest speed the profile drives at, which mustn't stall the servo, and
 # how often its speed updates go out, in milliseconds. Defaults 800, 300, 1,
-# 200 and 100. settings.toml takes no floats, so quote a fractional
-# soft_start_revs, such as "0.5".
+# 200 and 100. CircuitPython parses no floats out of settings.toml before
+# 10.3.0, so quote a fractional soft_start_revs, such as "0.5". A quoted one
+# reads the same on either.
 # default_speed = 800
 # soft_start_speed = 300
 # soft_start_revs = 1
@@ -82,7 +83,8 @@ mqtt_user = "your_mqtt_user"
 mqtt_pwd = "your_mqtt_password"
 
 # Optional. The MQTT socket and loop() timeout, in seconds; default 0.25.
-# settings.toml takes no floats, so write 1, or quote a fraction: "0.5".
+# CircuitPython parses no floats out of settings.toml before 10.3.0, so write
+# 1, or quote a fraction: "0.5". A quoted one reads the same on either.
 # Each loop() call blocks for up to twice this. While the blind moves, it
 # listens only where such a block can't lose a turn of its travel: a longer
 # timeout leaves fewer such places, and at 1 none at full speed.

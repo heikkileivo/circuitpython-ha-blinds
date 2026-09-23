@@ -1,4 +1,5 @@
 import time, gc, os, sys, ssl
+import env
 from time import sleep
 import microcontroller
 from watchdog import WatchDogMode
@@ -124,7 +125,7 @@ async def calculate_value(state, counter, disc):
     std_dev = 0
     total_units = 0
     units_per_pulse = 1 / counter.pulses_per_unit
-    power_divident = os.getenv("power_dividend")
+    power_divident = env.number("power_dividend")
     print(f"Entering value loop for {counter.name}")
     while state.running:
         current_time = supervisor.ticks_ms()
@@ -202,12 +203,12 @@ def create_tasks(state, disc,
     tasks = []
 
     counter = Counter()
-    counter.name = os.getenv("counter_name")
-    counter.pulses_per_unit = os.getenv("pulses_per_unit")
-    counter.interval = os.getenv("report_interval")
-    counter.buffer = RingBuffer(os.getenv("ring_buffer_length"))
-    pin = eval(os.getenv("sensor_pin"))
-    debounce_time = os.getenv("debounce_time_ms") / 1000
+    counter.name = env.text("counter_name")
+    counter.pulses_per_unit = env.integer("pulses_per_unit")
+    counter.interval = env.integer("report_interval")
+    counter.buffer = RingBuffer(env.integer("ring_buffer_length"))
+    pin = eval(env.text("sensor_pin"))
+    debounce_time = env.number("debounce_time_ms") / 1000
     tasks.append(asyncio.create_task(poll_pin(pin, state, counter, debounce_time=debounce_time)))
     tasks.append(asyncio.create_task(calculate_value(state, counter, disc)))
     tasks.append(asyncio.create_task(measure_uptime(state, disc)))
@@ -237,7 +238,7 @@ async def main():
 
     tinys3.set_pixel_power(True)
 
-    device_name = os.getenv("device_name", "Electricity Meter")
+    device_name = env.text("device_name", "Electricity Meter")
 
     disc = HADiscovery(device_name, "CircuitPython Electricity Meter", "electricity")
     disc.add_component("power", "sensor", {

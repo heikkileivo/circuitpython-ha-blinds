@@ -1,6 +1,7 @@
 # mqtt.py
 
-import os, time
+import time
+import env
 import asyncio
 import adafruit_connection_manager
 from bounded_mqtt import BoundedMQTT
@@ -130,10 +131,10 @@ class Mqtt:
         """
         (Re)create the MiniMQTT client with proper callbacks.
         """
-        broker = os.getenv("mqtt_broker")
-        port = os.getenv("mqtt_port")
-        user = os.getenv("mqtt_user")
-        pwd = os.getenv("mqtt_pwd")
+        broker = env.text("mqtt_broker")
+        port = env.integer("mqtt_port")
+        user = env.text("mqtt_user")
+        pwd = env.text("mqtt_pwd")
 
         self.client = BoundedMQTT(
             broker=broker,
