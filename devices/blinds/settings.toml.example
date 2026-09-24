@@ -9,11 +9,15 @@ CIRCUITPY_WEB_INSTANCE_NAME = "upstairs-living-room-right-blinds"
 # at most.
 #
 # It has to be CIRCUITPY_WIFI_HOSTNAME, which needs CircuitPython 10.3.0 or
-# later, and it only takes effect after a full reboot - reloading code.py is
-# not enough, because the web workflow's association survives a reload.
-# Setting wifi.radio.hostname from code.py cannot work: the firmware brings
-# WiFi up itself at boot, before code.py runs, and ESP-IDF only reflects a
-# hostname change at the next reassociation, not on the lease in hand.
+# later, and it only takes effect after a hard reset or power cycle. A
+# code.py reload does not do it, and neither does a soft reboot - both
+# confirmed on the meters - because the firmware brings WiFi up itself at
+# boot, before code.py runs, and only a user-initiated reset tears the radio
+# back down.
+#
+# That is also why setting wifi.radio.hostname from code.py cannot work: by
+# then the lease is taken, and ESP-IDF reflects a hostname change only at the
+# next reassociation, not on the lease in hand.
 #
 # Left unset, CircuitPython uses cpy-<board id>-<mac> trimmed to 32 bytes,
 # which on a TinyS3 is cpy-edmaker_tinys3-<mac>. That is already unique per
