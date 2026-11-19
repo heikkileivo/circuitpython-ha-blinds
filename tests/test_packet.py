@@ -185,3 +185,92 @@ class ReaderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def status(scs_id, data):
+    """A reply from servo scs_id with no error and these data bytes."""
+    body = bytes([scs_id, len(data) + 2, 0]) + bytes(data)
+    return (b"\xff\xff" + body + bytes([~sum(body) & 0xFF]), 0.002)
+
+
+class SeriesTest(unittest.TestCase):
+    """STS3215 values are little-endian, where the SCS's are big-endian (#138).
+    The registers and bit positions come from Feetech's FTServo SMS_STS."""
+
+    def sts_reader(self, *replies):
+        uart = FakeUart(status(1, [9, 3]), *replies)
+        reader = Reader(uart)
+        self.assertEqual(reader.detect(1), "sts")
+        uart.written.clear()
+        return reader, uart
+
+    def test_a_servo_is_an_scs_until_detected(self):
+        self.assertEqual(Reader(FakeUart()).series(1), "scs")
+
+    def test_model_number_777_is_an_sts_and_anything_else_that_replies_an_scs(self):
+        reader = Reader(FakeUart(status(1, [9, 3]), status(2, [0, 0])))
+
+        self.assertEqual(reader.detect(1), "sts")
+        self.assertEqual(reader.detect(2), "scs")
+        self.assertEqual((reader.series(1), reader.series(2)), ("sts", "scs"))
+
+    def test_detect_reads_registers_3_and_4(self):
+        uart = FakeUart(status(1, [9, 3]))
+
+        Reader(uart).detect(1)
+
+        self.assertEqual(uart.written, [bytes.fromhex("ffff010402030" "2f3")])
+
+    def test_a_silent_servo_isnt_detected_and_keeps_its_series(self):
+        reader = Reader(FakeUart(status(1, [9, 3])), log=False)
+        reader.detect(1)
+        reader.uart.replies.clear()
+
+        self.assertIsNone(reader.detect(1))
+        self.assertEqual(reader.series(1), "sts")
+
+    def test_an_sts_reads_words_low_byte_first(self):
+        reader, _ = self.sts_reader(status(1, [0xAB, 0x02]))
+
+        self.assertEqual(reader.read_2_bytes(1, Address.PRESENT_POSITION_L), 683)
+
+    def test_an_sts_writes_words_low_byte_first(self):
+        reader, uart = self.sts_reader(status(1, []))
+
+        reader.write_word(1, Address.GOAL_POSITION_L, 0x0FFF)
+
+        self.assertEqual(uart.written[0][5:8], bytes([Address.GOAL_POSITION_L, 0xFF, 0x0F]))
+
+    def test_an_sts_motion_sample_is_little_endian_with_the_same_sign_bits(self):
+        # Angle 4000 (0fa0), speed -1400 (sign bit 15: 8578), load -800
+        # (sign bit 10: 0720), supply 8.1 V.
+        reader, _ = self.sts_reader(
+            status(1, [0xA0, 0x0F, 0x78, 0x85, 0x20, 0x07, 0x51]))
+
+        self.assertEqual(reader.read_motion(1), (4000, -1400, -800, 81))
+
+    def test_an_sts_moving_sample_decodes_the_load_little_endian(self):
+        reader, _ = self.sts_reader(
+            status(1, [0x96, 0x04, 0x4F, 0x16, 0x00, 0x00, 0x01]))
+
+        self.assertEqual(reader.read_moving(1), (-150, 79, True))
+
+    def test_the_lock_is_at_48_on_an_scs_and_55_on_an_sts(self):
+        reader, _ = self.sts_reader()
+
+        self.assertEqual(reader.lock_address(1), 55)
+        self.assertEqual(reader.lock_address(2), Address.LOCK)
+
+    def test_nothing_that_moves_an_sts_is_sent_until_it_has_a_driver(self):
+        reader, uart = self.sts_reader()
+
+        self.assertIsNone(reader.set_time(1, 800))
+        self.assertIsNone(reader.set_speed(1, 800))
+        self.assertIsNone(reader.set_position(1, 100))
+        self.assertEqual(uart.written, [])
+
+    def test_the_scs_still_moves(self):
+        uart = FakeUart(status(2, []))
+
+        self.assertEqual(Reader(uart).set_time(2, 800), 0)
+        self.assertEqual(len(uart.written), 1)
