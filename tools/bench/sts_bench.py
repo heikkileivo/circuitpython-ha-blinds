@@ -5,12 +5,16 @@
     sts_bench.py <device-name> scan [--full]    find the servo, dump its registers
     sts_bench.py <device-name> onboard          set ID 1, 250,000 baud, wheel mode
     sts_bench.py <device-name> drive [--speeds 300 600 ...] [--hold 2]
+    sts_bench.py <device-name> stall [--limit 200] [--speed 600] [--stall-hold 6]
+                                                run into a hand-held output with the
+                                                torque limit (RAM, address 48) lowered
     sts_bench.py <device-name> stop             speed 0, torque 1 (brake)
 
 Everything runs as code pasted into the REPL over the /cp/serial/ websocket.
 Nothing is written to the device's filesystem, and the blind's own modules
 aren't used, so the blind needn't run any particular firmware. Only ONE servo
-may be on the bus. Never writes address 48 (the STS's torque limit), torque
+may be on the bus. Only `stall` writes address 48 (the STS's torque limit, RAM, restored
+after), and nothing writes torque
 enable 2 (unverified) or 128 (recalibrates).
 
 STS facts used (Feetech FTServo SMS_STS, see #100): words are little-endian;
@@ -56,7 +60,7 @@ def sample(u, i):
     if d is None:
         return None
     return dict(pos=d[0] | d[1] << 8, spd=sgn(d[2] | d[3] << 8, 15), load=sgn(d[4] | d[5] << 8, 10),
-                v=d[6] / 10, t=d[7], mov=d[10], cur=d[13] | d[14] << 8)
+                v=d[6] / 10, t=d[7], st=d[9], mov=d[10], cur=d[13] | d[14] << 8)
 def speed_word(v):
     return w16((-v | 0x8000) if v < 0 else v)
 '''
@@ -151,6 +155,44 @@ finally:
     u.deinit()
 '''
 
+STALL = '''
+u = mk(250000)
+hot = 0
+full = None
+try:
+    full = rd(u, 1, 16, 2)
+    print("max torque (16)", list(full), "limit now", list(rd(u, 1, 48, 2)))
+    if rd(u, 1, 33, 1) != bytes([1]):
+        raise SystemExit("not in wheel mode: run onboard first")
+    print("limit ->", LIMIT, wr(u, 1, 48, w16(LIMIT)), "torque on", wr(u, 1, 40, [1]))
+    print("Hold the output when told. Starting in 3 s.")
+    time.sleep(3)
+    wr(u, 1, 46, speed_word(SPEED))
+    t0 = time.monotonic(); said = False; misses = 0
+    while time.monotonic() - t0 < HOLD:
+        if not said and time.monotonic() - t0 > 1.0:
+            print("*** HOLD THE OUTPUT NOW"); said = True
+        s = sample(u, 1)
+        if s is None:
+            misses += 1
+            print("no reply")
+            if misses >= 3:
+                raise SystemExit("servo stopped replying")
+            continue
+        print("%.2f" % (time.monotonic() - t0), s)
+        hot = hot + 1 if (s["v"] < 5.0 or s["t"] > 60) else 0
+        if hot >= 2:
+            raise SystemExit("abort: supply %s V, %s C" % (s["v"], s["t"]))
+finally:
+    for _ in range(3):
+        if wr(u, 1, 46, [0, 0]) is not None:
+            break
+    wr(u, 1, 48, list(full) if full else w16(1000))
+    wr(u, 1, 40, [1])
+    print("stopped: speed 0, torque limit restored", rd(u, 1, 48, 2), "torque 1")
+    u.deinit()
+'''
+
 STOP = '''
 u = None
 for baud in (250000, 1000000):
@@ -174,13 +216,17 @@ def run(repl, body, timeout, **names):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("device")
-    p.add_argument("command", choices=("interrupt", "scan", "onboard", "drive", "stop"))
+    p.add_argument("command", choices=("interrupt", "scan", "onboard", "drive", "stall", "stop"))
     p.add_argument("--full", action="store_true", help="scan: all IDs at all baud rates (~50 s)")
     p.add_argument("--baud", type=int, default=1000000, help="onboard: the servo's current baud rate")
     p.add_argument("--id", type=int, default=1, help="onboard: the servo's current ID")
     p.add_argument("--speeds", type=int, nargs="+", default=[300, 600, 1200, -600],
                    help="drive: goal speeds in steps/s, signed (default: %(default)s)")
     p.add_argument("--hold", type=float, default=2.0, help="drive: seconds at each speed")
+    p.add_argument("--limit", type=int, default=200, help="stall: torque limit, 0-1000 (0.1%%)")
+    p.add_argument("--speed", type=int, default=600, help="stall: goal speed in steps/s")
+    p.add_argument("--stall-hold", dest="stall_hold", type=float, default=6.0,
+                   help="stall: seconds to run")
     a = p.parse_args()
     repl = Repl(device(a.device))
     if a.command == "interrupt":
@@ -191,6 +237,8 @@ def main():
         run(repl, ONBOARD, 30, BAUD=a.baud, ID=a.id)
     elif a.command == "drive":
         run(repl, DRIVE, 20 + len(a.speeds) * (a.hold + 3) + 10, SPEEDS=a.speeds, HOLD=a.hold)
+    elif a.command == "stall":
+        run(repl, STALL, 30 + a.stall_hold, LIMIT=a.limit, SPEED=a.speed, HOLD=a.stall_hold)
     else:
         run(repl, STOP, 20)
 
