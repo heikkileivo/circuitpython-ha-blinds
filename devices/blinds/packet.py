@@ -14,7 +14,7 @@ class Instruction:
 
 class Address:
     VERSION_L = 3
-    VERSION_H = 3
+    VERSION_H = 4
 
     ID = 5
     BAUD_RATE = 6
@@ -46,6 +46,24 @@ class Address:
     MOVING = 66
     PRESENT_CURRENT_L = 69
     PRESENT_CURRENT_H = 70
+
+
+# What differs between the servo series, by name. A word is two bytes: the SCS
+# sends the high byte first, the STS the low byte first. A sign is in a bit of
+# the high byte, and STS values carry theirs in the same bits as the SCS's
+# (speed bit 15, load bit 10). LOCK is the EEPROM lock: on the STS address 48
+# is the torque limit, so nothing may write 0 or 1 there.
+SERIES = {"scs": {"big_endian": True, "lock": Address.LOCK},
+          "sts": {"big_endian": False, "lock": 55}}
+
+# Registers 3-4 of an STS3215: model number 777, little-endian. Registers 3-4
+# don't name an SCS model, so any other servo that replies is taken as an SCS.
+STS3215_MODEL = (9, 3)
+SERIES_DEFAULT = "scs"
+
+# Series whose motion commands the firmware can send. An STS is added with its
+# lift driver (#140); until then a Reader sends it nothing that moves it.
+DRIVEN_SERIES = ("scs",)
 
 
 def checksum(body):
@@ -80,10 +98,40 @@ class Reader:
     def __init__(self, uart, log=True):
         """log: whether a transaction that got no good reply prints why."""
         self.uart = uart
+        self._series = {}
         self._log = log
         self._uart_errors = {}
         # What was wrong with the last transaction's reply, or None.
         self.problem = None
+
+    def series(self, scs_id):
+        """The series name a servo was detected as. A servo that hasn't been
+        detected is an SCS, which is what every blind has had so far."""
+        return self._series.get(scs_id, SERIES_DEFAULT)
+
+    def detect(self, scs_id):
+        """Read the servo's model number (registers 3-4), remember its series
+        and return the name, or None if no good reply came. A servo that
+        doesn't reply is left as it was."""
+        reply = self.read(scs_id, Address.VERSION_L, 2)
+        if reply is None:
+            return None
+        name = "sts" if tuple(reply[1]) == STS3215_MODEL else "scs"
+        self._series[scs_id] = name
+        return name
+
+    def can_drive(self, scs_id):
+        """Whether the firmware may send this servo a command that moves it."""
+        return self.series(scs_id) in DRIVEN_SERIES
+
+    def lock_address(self, scs_id):
+        """Where this servo's EEPROM lock is."""
+        return SERIES[self.series(scs_id)]["lock"]
+
+    def _word(self, scs_id, value):
+        l = value & 0xFF
+        h = (value >> 8) & 0xFF
+        return [h, l] if SERIES[self.series(scs_id)]["big_endian"] else [l, h]
 
     def flush_buffer(self):
         count = self.uart.in_waiting
@@ -114,10 +162,7 @@ class Reader:
 
 
     def write_word(self, scs_id, address, value):
-        l = value & 0xFF
-        h = (value >> 8) & 0xFF
-        data = [h, l]
-        return self.write_mem(scs_id, address, data)
+        return self.write_mem(scs_id, address, self._word(scs_id, value))
 
     def read_1_byte(self, scs_id, address):
         reply = self.read(scs_id, address, 1)
@@ -127,8 +172,10 @@ class Reader:
         reply = self.read(scs_id, address, 2)
         if reply is None:
             return None
-        h, l = reply[1]
-        return (h << 8) | l
+        a, b = reply[1]
+        if SERIES[self.series(scs_id)]["big_endian"]:
+            return (a << 8) | b
+        return (b << 8) | a
 
     def read_motion(self, scs_id):
         """The servo angle, PRESENT_SPEED, PRESENT_LOAD and PRESENT_VOLTAGE
@@ -139,10 +186,16 @@ class Reader:
         if reply is None:
             return None
         data = reply[1]
-        angle = (data[0] << 8) | data[1]
-        speed = ((data[2] & 0x7F) << 8) | data[3]
-        return (angle, -speed if data[2] & 0x80 else speed,
-                _load(data[4], data[5]), data[6])
+        if SERIES[self.series(scs_id)]["big_endian"]:
+            angle = (data[0] << 8) | data[1]
+            speed_high, speed_low = data[2], data[3]
+            load = _load(data[4], data[5])
+        else:
+            angle = (data[1] << 8) | data[0]
+            speed_high, speed_low = data[3], data[2]
+            load = _load(data[5], data[4])
+        speed = ((speed_high & 0x7F) << 8) | speed_low
+        return (angle, -speed if speed_high & 0x80 else speed, load, data[6])
 
     def read_moving(self, scs_id):
         """PRESENT_LOAD, PRESENT_VOLTAGE (0.1 V) and whether the servo is
@@ -151,18 +204,28 @@ class Reader:
         if reply is None:
             return None
         data = reply[1]
-        return _load(data[0], data[1]), data[2], data[6] == 1
+        if SERIES[self.series(scs_id)]["big_endian"]:
+            load = _load(data[0], data[1])
+        else:
+            load = _load(data[1], data[0])
+        return load, data[2], data[6] == 1
 
     def set_position(self, scs_id, position):
+        if not self.can_drive(scs_id):
+            return None
         return self.write_word(scs_id, Address.GOAL_POSITION_L, position)
 
     def get_time(self, scs_id):
         return self.read_2_bytes(scs_id, Address.GOAL_TIME_L)
 
     def set_time(self, scs_id, time):
+        if not self.can_drive(scs_id):
+            return None
         return self.write_word(scs_id, Address.GOAL_TIME_L, time)
 
     def set_speed(self, scs_id, speed):
+        if not self.can_drive(scs_id):
+            return None
         return self.write_word(scs_id, Address.GOAL_SPEED_L, speed)
 
     def uart_errors(self, scs_id):
