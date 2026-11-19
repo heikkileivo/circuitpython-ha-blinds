@@ -311,6 +311,7 @@ async def main():
                             baudrate=servo_bus.BAUD_RATE,
                             receiver_buffer_size=32)
     reader = Reader(uart)
+    servo_health.detect_series(reader)
     keys = None
     try:
         # The end sensors, up then down: active high, with pull-downs.

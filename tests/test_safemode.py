@@ -12,7 +12,7 @@ import unittest
 
 from packet import Address, Reader
 from reset_cause import OPTIONS, boot_decision, record
-from safemode import REASONS, STOP_LIFT, decision
+from safemode import REASONS, STOP_LIFT, STOP_LIFT_STS, decision
 from servo_bus import LIFT_ID
 from tests.test_packet import FakeUart
 
@@ -58,6 +58,15 @@ class StopPacketTest(unittest.TestCase):
         Reader(uart).write_word(LIFT_ID, Address.GOAL_TIME_L, 0)
 
         self.assertEqual(uart.written, [STOP_LIFT])
+
+    def test_the_sts_stop_packet_writes_goal_speed_0_to_the_lift(self):
+        uart = FakeUart()
+        reader = Reader(uart)
+        reader._series[LIFT_ID] = "sts"
+
+        reader.write_word(LIFT_ID, Address.GOAL_SPEED_L, 0)
+
+        self.assertEqual(uart.written, [STOP_LIFT_STS])
 
 
 if __name__ == "__main__":
