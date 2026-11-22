@@ -261,13 +261,30 @@ class SeriesTest(unittest.TestCase):
         self.assertEqual(reader.lock_address(1), 55)
         self.assertEqual(reader.lock_address(2), Address.LOCK)
 
-    def test_nothing_that_moves_an_sts_is_sent_until_it_has_a_driver(self):
+    def test_an_sts_takes_no_goal_time_or_goal_position(self):
+        # The STS lift is driven by goal speed (#140), and has no tilt driver
+        # yet (#141).
         reader, uart = self.sts_reader()
 
         self.assertIsNone(reader.set_time(1, 800))
-        self.assertIsNone(reader.set_speed(1, 800))
         self.assertIsNone(reader.set_position(1, 100))
         self.assertEqual(uart.written, [])
+
+    def test_an_sts_goal_speed_is_signed_with_the_sign_in_bit_15_and_positive_up(self):
+        reader, uart = self.sts_reader(status(1, []), status(1, []))
+
+        reader.set_speed(1, 1600)
+        reader.set_speed(1, -1000)
+
+        self.assertEqual([w[5:8] for w in uart.written],
+                         [bytes([Address.GOAL_SPEED_L, 0x40, 0x06]),
+                          bytes([Address.GOAL_SPEED_L, 0xE8, 0x83])])
+
+    def test_an_sts_goal_speed_reads_back_signed(self):
+        reader, _ = self.sts_reader(status(1, [0xE8, 0x83]), status(1, [0x40, 0x06]))
+
+        self.assertEqual(reader.get_speed(1), -1000)
+        self.assertEqual(reader.get_speed(1), 1600)
 
     def test_the_scs_still_moves(self):
         uart = FakeUart(status(2, []))

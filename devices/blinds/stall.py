@@ -41,7 +41,10 @@ class StallDetector:
 
     def __init__(self, window_ms=WINDOW_MS, max_speed=MAX_SPEED,
                  max_angle_change=MAX_ANGLE_CHANGE, grace_ms=GRACE_MS,
-                 dead_zone_window_ms=DEAD_ZONE_WINDOW_MS):
+                 dead_zone_window_ms=DEAD_ZONE_WINDOW_MS, dead_zone=True):
+        """dead_zone: whether the servo's angle has the SCS pot's dead zone.
+        The STS3215's encoder has none."""
+        self._dead_zone = dead_zone
         self._window_ms = window_ms
         self._max_speed = max_speed
         self._max_angle_change = max_angle_change
@@ -88,7 +91,7 @@ class StallDetector:
         """The frozen run's stall window at this duty. A run that froze just
         outside the dead zone keeps the normal window, even if it drifts in:
         crossing the dead zone, the angle holds at 1018 or more."""
-        if not in_dead_zone(self.frozen_angle):
+        if not self._dead_zone or not in_dead_zone(self.frozen_angle):
             return self._window_ms
         return max(self._window_ms,
                    self._dead_zone_window_ms * _DEAD_ZONE_WINDOW_DUTY // abs(duty))
