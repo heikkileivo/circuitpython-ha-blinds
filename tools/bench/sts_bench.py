@@ -8,6 +8,9 @@
     sts_bench.py <device-name> stall [--limit 200] [--speed 600] [--stall-hold 6]
                                                 run into a hand-held output with the
                                                 torque limit (RAM, address 48) lowered
+    sts_bench.py <device-name> wiggle [--tilt-delta 40] [--lift-speed 300] [--lift-hold 1]
+                                                STS lift (ID 1) and SCS tilt (ID 2) on one
+                                                bus: tilt out and back, lift each way, braked
     sts_bench.py <device-name> stop             speed 0, torque 1 (brake)
 
 Everything runs as code pasted into the REPL over the /cp/serial/ websocket.
@@ -193,6 +196,63 @@ finally:
     u.deinit()
 '''
 
+WIGGLE = '''
+u = mk(250000)
+def be(v):
+    return [(v >> 8) & 255, v & 255]
+def tilt_pos():
+    d = rd(u, 2, 56, 2)
+    return None if d is None else (d[0] << 8) | d[1]
+tilt_start = None
+def lift_stop():
+    for _ in range(3):
+        if wr(u, 1, 46, [0, 0]) is not None:
+            break
+    wr(u, 1, 40, [1])
+def lift_run(v, hold):
+    print("--- lift speed", v, "for", hold, "s")
+    wr(u, 1, 46, speed_word(v))
+    t0 = time.monotonic(); bad = 0; p0 = None
+    while time.monotonic() - t0 < hold:
+        s = sample(u, 1)
+        if s is None:
+            raise SystemExit("lift stopped replying")
+        p0 = s["pos"] if p0 is None else p0
+        print("%.2f" % (time.monotonic() - t0), s)
+        if abs(s["load"]) > 700 or s["v"] < 5.0 or s["t"] > 60:
+            raise SystemExit("abort: load %s, supply %s V, %s C" % (s["load"], s["v"], s["t"]))
+        bad = bad + 1 if (time.monotonic() - t0 > 0.4 and abs(s["spd"]) < 50) else 0
+        if bad >= 3:
+            raise SystemExit("abort: commanded %s but not turning (blocked?)" % v)
+    lift_stop()
+    time.sleep(0.5)
+    s = sample(u, 1)
+    print("--- stopped at", s["pos"], "moved", (((s["pos"] - p0 + 2048) & 0xFFF) - 2048), "steps")
+try:
+    if rd(u, 1, 33, 1) != bytes([1]):
+        raise SystemExit("lift not in wheel mode")
+    tilt_start = tilt_pos()
+    print("tilt at", tilt_start)
+    if tilt_start is None:
+        raise SystemExit("tilt doesn't reply")
+    print("=== tilt: torque on, out by", TILT, "and back")
+    wr(u, 2, 40, [1]); wr(u, 2, 44, [0, 0]); wr(u, 2, 46, be(300))
+    for target in (tilt_start + TILT, tilt_start - TILT, tilt_start):
+        wr(u, 2, 42, be(target))
+        time.sleep(1.2)
+        print("tilt goal", target, "now", tilt_pos())
+    print("=== lift")
+    lift_run(SPEED, HOLD)
+    lift_run(-SPEED, HOLD)
+    lift_run(-SPEED, HOLD)
+    lift_run(SPEED, HOLD)
+finally:
+    lift_stop()
+    wr(u, 2, 40, [0])
+    print("done: lift speed 0 torque 1 (braked), tilt limp at", tilt_pos())
+    u.deinit()
+'''
+
 STOP = '''
 u = None
 for baud in (250000, 1000000):
@@ -216,7 +276,7 @@ def run(repl, body, timeout, **names):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("device")
-    p.add_argument("command", choices=("interrupt", "scan", "onboard", "drive", "stall", "stop"))
+    p.add_argument("command", choices=("interrupt", "scan", "onboard", "drive", "stall", "wiggle", "stop"))
     p.add_argument("--full", action="store_true", help="scan: all IDs at all baud rates (~50 s)")
     p.add_argument("--baud", type=int, default=1000000, help="onboard: the servo's current baud rate")
     p.add_argument("--id", type=int, default=1, help="onboard: the servo's current ID")
@@ -227,6 +287,9 @@ def main():
     p.add_argument("--speed", type=int, default=600, help="stall: goal speed in steps/s")
     p.add_argument("--stall-hold", dest="stall_hold", type=float, default=6.0,
                    help="stall: seconds to run")
+    p.add_argument("--tilt-delta", type=int, default=40, help="wiggle: tilt counts out and back")
+    p.add_argument("--lift-speed", type=int, default=300, help="wiggle: lift steps/s")
+    p.add_argument("--lift-hold", type=float, default=1.0, help="wiggle: seconds per lift move")
     a = p.parse_args()
     repl = Repl(device(a.device))
     if a.command == "interrupt":
@@ -239,6 +302,9 @@ def main():
         run(repl, DRIVE, 20 + len(a.speeds) * (a.hold + 3) + 10, SPEEDS=a.speeds, HOLD=a.hold)
     elif a.command == "stall":
         run(repl, STALL, 30 + a.stall_hold, LIMIT=a.limit, SPEED=a.speed, HOLD=a.stall_hold)
+    elif a.command == "wiggle":
+        run(repl, WIGGLE, 40 + 4 * (a.lift_hold + 2), TILT=a.tilt_delta, SPEED=a.lift_speed,
+            HOLD=a.lift_hold)
     else:
         run(repl, STOP, 20)
 
