@@ -47,6 +47,29 @@ def _encode_duty(value):
     direction in bit 10."""
     return abs(value) | (1 << 10) if value < 0 else value
 
+# The STS3215 lift is driven by goal speed, where the SCS lift takes a duty.
+# Everything above the Servo works in duty, negative for up, so the Servo turns
+# a duty into a speed: positive up on the STS, as the bench showed (#142). A
+# duty unit is this many steps/s: duty 800 is 1,600 steps/s, below the 2,150
+# the 8.5 V supply allows unloaded. Placeholder until the loaded bench gate.
+STS_SPEED_PER_DUTY = 2
+STS_MAX_SPEED = 3000
+STS_STEPS_PER_TURN = 4096
+
+
+def sts_speed(duty, per_duty=STS_SPEED_PER_DUTY):
+    """The STS goal speed for a duty: up (negative duty) is positive."""
+    return max(-STS_MAX_SPEED, min(STS_MAX_SPEED, -duty * per_duty))
+
+
+def _scaled(value):
+    """A servo angle or speed in the SCS's counts, so a turn is
+    travel.COUNTS_PER_TURN counts, as everything that tracks the lift
+    assumes. The STS has no dead zone, so its turn is simply scaled."""
+    scaled = abs(value) * travel.COUNTS_PER_TURN // STS_STEPS_PER_TURN
+    return -scaled if value < 0 else scaled
+
+
 class Servo:
     def __init__(self, id, reader, scale=1.0):
         self._id = id
@@ -59,6 +82,7 @@ class Servo:
         self._u = 0                 # Previous Voltage
         self._t = 0                 # Previous Temperature
         self._duty = 0              # Duty last commanded
+        self._speed_per_duty = env.integer("sts_speed_per_duty", STS_SPEED_PER_DUTY)
         self.move = MoveFigures()   # This move's figures, fed by every sample
 
     @property
@@ -77,7 +101,32 @@ class Servo:
 
 
     @property
+    def has_dead_zone(self):
+        """Whether the servo angle has the SCS pot's dead zone."""
+        return not self._sts
+
+    @property
+    def _sts(self):
+        return self._reader.series(self._id) == "sts"
+
+    def _write_duty(self, value):
+        """Write a duty, as goal time on an SCS and as goal speed on an STS.
+        Returns the servo's ERROR byte, or None if no good reply came."""
+        if self._sts:
+            return self._reader.set_speed(self._id, sts_speed(value, self._speed_per_duty))
+        return self._reader.set_time(self._id, _encode_duty(value))
+
+    def _read_duty(self):
+        """What the servo holds as its duty, as _write_duty wrote it."""
+        if self._sts:
+            return self._reader.get_speed(self._id)
+        return self._reader.get_time(self._id)
+
+    @property
     def speed(self):
+        if self._sts:
+            goal = self._reader.get_speed(self._id)
+            return None if goal is None else -(goal // self._speed_per_duty)
         v = self._reader.get_time(self._id)
         sign = v & (1<<10)
         if sign:
@@ -88,11 +137,12 @@ class Servo:
     @speed.setter
     def speed(self, value):
         self._duty = value
-        value = _encode_duty(value)
+        value = (sts_speed(value, self._speed_per_duty) if self._sts
+                 else _encode_duty(value))
         retries = 3
         while True:
-            self._reader.set_time(self._id, value)
-            v = self._reader.get_time(self._id)
+            self._write_duty(self._duty)
+            v = self._read_duty()
             if v == value:
                 print(f"Successfully set speed to {value}.")
                 break
@@ -109,7 +159,7 @@ class Servo:
         verified at the start and at the stop instead. Returns whether the
         servo replied."""
         self._duty = value
-        return self._reader.set_time(self._id, _encode_duty(value)) is not None
+        return self._write_duty(value) is not None
 
     @property
     def commanded_duty(self):
@@ -126,6 +176,8 @@ class Servo:
             return None
         angle, speed, load, voltage = sample
         self.move.feed(voltage, load)
+        if self._sts:
+            return _scaled(angle), _scaled(speed)
         return angle, speed
 
 
@@ -244,7 +296,8 @@ async def track_travel(servo, finish_event, tracker, sample_ms, on_sample, on_st
         max_speed=env.integer("stall_max_speed", stall.MAX_SPEED),
         max_angle_change=env.integer("stall_max_angle_change", stall.MAX_ANGLE_CHANGE),
         grace_ms=env.integer("stall_grace_ms", stall.GRACE_MS),
-        dead_zone_window_ms=env.integer("stall_dead_zone_window_ms", stall.DEAD_ZONE_WINDOW_MS))
+        dead_zone_window_ms=env.integer("stall_dead_zone_window_ms", stall.DEAD_ZONE_WINDOW_MS),
+        dead_zone=servo.has_dead_zone)
     print(f"Tracking travel for servo {servo.id}...")
     while True:
         # monotonic() loses precision within hours of uptime; monotonic_ns() doesn't.

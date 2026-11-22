@@ -61,9 +61,11 @@ SERIES = {"scs": {"big_endian": True, "lock": Address.LOCK},
 STS3215_MODEL = (9, 3)
 SERIES_DEFAULT = "scs"
 
-# Series whose motion commands the firmware can send. An STS is added with its
-# lift driver (#140); until then a Reader sends it nothing that moves it.
+# Series whose goal time and goal position the firmware writes: the SCS
+# lift's duty and the tilt's position. The STS lift is driven by goal speed
+# instead (set_speed); it has no tilt driver yet (#141).
 DRIVEN_SERIES = ("scs",)
+STS_SPEED_SIGN = 0x8000
 
 
 def checksum(body):
@@ -224,9 +226,21 @@ class Reader:
         return self.write_word(scs_id, Address.GOAL_TIME_L, time)
 
     def set_speed(self, scs_id, speed):
+        """Write the goal speed. An STS lift in wheel mode takes it signed,
+        positive up, with the sign in bit 15."""
+        if self.series(scs_id) == "sts":
+            word = abs(speed) | (STS_SPEED_SIGN if speed < 0 else 0)
+            return self.write_word(scs_id, Address.GOAL_SPEED_L, word)
         if not self.can_drive(scs_id):
             return None
         return self.write_word(scs_id, Address.GOAL_SPEED_L, speed)
+
+    def get_speed(self, scs_id):
+        """The STS lift's goal speed, signed, or None if no good reply came."""
+        word = self.read_2_bytes(scs_id, Address.GOAL_SPEED_L)
+        if word is None:
+            return None
+        return -(word & ~STS_SPEED_SIGN) if word & STS_SPEED_SIGN else word
 
     def uart_errors(self, scs_id):
         """How many transactions with this servo got no good reply, and
