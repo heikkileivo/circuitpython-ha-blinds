@@ -64,11 +64,33 @@ def servo_min_voltage(lift_move, tilt_move):
     return _volts(min(voltages)) if voltages else None
 
 
-# Each write of the lift's stop sequence, as (address, data).
-_STOP_WRITES = {lift_stop.DUTY_0: (Address.GOAL_TIME_L, [0, 0]),
-                lift_stop.BRAKE: (Address.TORQUE_ENABLE, [2]),
-                lift_stop.FALLBACK_BRAKE: (Address.TORQUE_ENABLE, [1]),
-                lift_stop.LIMP: (Address.TORQUE_ENABLE, [0])}
+# Each write of the lift's stop sequence, as (address, data), by series.
+# The STS lift's duty 0 is goal speed 0 in wheel mode. Its brake is torque 1
+# at speed 0, which holds it: torque 2 is unverified on an STS, and 128
+# recalibrates it, so neither is ever written. Address 48 is its torque limit.
+_STOP_WRITES = {
+    "scs": {lift_stop.DUTY_0: (Address.GOAL_TIME_L, [0, 0]),
+            lift_stop.BRAKE: (Address.TORQUE_ENABLE, [2]),
+            lift_stop.FALLBACK_BRAKE: (Address.TORQUE_ENABLE, [1]),
+            lift_stop.LIMP: (Address.TORQUE_ENABLE, [0])},
+    "sts": {lift_stop.DUTY_0: (Address.GOAL_SPEED_L, [0, 0]),
+            lift_stop.BRAKE: (Address.TORQUE_ENABLE, [1]),
+            lift_stop.FALLBACK_BRAKE: (Address.TORQUE_ENABLE, [1]),
+            lift_stop.LIMP: (Address.TORQUE_ENABLE, [0])}}
+
+
+def detect_series(reader):
+    """Read each servo's model number, so the stops below write what its
+    series takes. A servo that doesn't reply stays an SCS, and its stop
+    writes will fail to confirm the same way. Call it once, before the first
+    stop."""
+    for scs_id in (LIFT_ID, TILT_ID):
+        series = first_reply(lambda: reader.detect(scs_id))
+        print(f"Servo {scs_id}: {series or 'series unknown'}")
+
+
+def _stop_write(reader, scs_id, step):
+    return _STOP_WRITES[reader.series(scs_id)][step]
 
 
 def stop_servos(reader):
@@ -89,7 +111,7 @@ def stop_lift(reader, duty_0_outcome=None):
         step = lift_stop.next_step(step, outcome)
         if step in lift_stop.ENDS:
             break
-        outcome = _write_checked(reader, LIFT_ID, *_STOP_WRITES[step])
+        outcome = _write_checked(reader, LIFT_ID, *_stop_write(reader, LIFT_ID, step))
         print(f"Lift stop: {step} {outcome}.")
     if step == lift_stop.BRAKE_UNCONFIRMED:
         # The motor has stopped anyway, so main() doesn't fail.
@@ -101,13 +123,13 @@ def stop_lift(reader, duty_0_outcome=None):
 def write_duty_0(reader, scs_id):
     """Write duty 0 to a servo in wheel mode, and read it back. Returns the
     read-back's outcome, one of lift_stop's."""
-    return _write_checked(reader, scs_id, *_STOP_WRITES[lift_stop.DUTY_0])
+    return _write_checked(reader, scs_id, *_stop_write(reader, scs_id, lift_stop.DUTY_0))
 
 
 def torque_off(reader, scs_id):
     """Turn a servo's torque off, leaving it limp, and read it back. Returns
     whether it's confirmed off."""
-    return _write_checked(reader, scs_id, *_STOP_WRITES[lift_stop.LIMP]) == lift_stop.CONFIRMED
+    return _write_checked(reader, scs_id, *_stop_write(reader, scs_id, lift_stop.LIMP)) == lift_stop.CONFIRMED
 
 
 def boot_reinit(reader):

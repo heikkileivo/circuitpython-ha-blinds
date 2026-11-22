@@ -27,6 +27,13 @@ import servo_bus
 _BODY = (servo_bus.LIFT_ID, 0x05, 0x03, 0x2C, 0x00, 0x00)
 STOP_LIFT = b"\xff\xff" + bytes(_BODY) + bytes((~sum(_BODY) & 0xFF,))
 
+# The same for an STS3215 lift, which takes its wheel-mode speed at address 46
+# (GOAL_SPEED_L): a duty 0 written at 44 doesn't stop it. Safe mode can't read
+# the servo's model, so it sends both. The SCS lift is in wheel mode, where
+# goal speed is unused: UNVERIFIED on the bench (#142).
+_STS_BODY = (servo_bus.LIFT_ID, 0x05, 0x03, 0x2E, 0x00, 0x00)
+STOP_LIFT_STS = b"\xff\xff" + bytes(_STS_BODY) + bytes((~sum(_STS_BODY) & 0xFF,))
+
 WAIT_S = 30
 
 # Every member of supervisor.SafeModeReason in CircuitPython 9.1.1
@@ -59,6 +66,7 @@ def recover():
         try:
             uart = busio.UART(board.TX, board.RX, baudrate=servo_bus.BAUD_RATE)
             uart.write(STOP_LIFT)
+            uart.write(STOP_LIFT_STS)
         except Exception as e:
             # The wait and the restart must still happen.
             print(f"Failed to stop the lift: {e!r}")

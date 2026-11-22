@@ -13,7 +13,9 @@ import servo_health
 
 uart = busio.UART(board.TX, board.RX, baudrate=servo_bus.BAUD_RATE, receiver_buffer_size=32)
 try:
-    lift, tilt = servo_health.stop_servos(Reader(uart))
+    reader = Reader(uart)
+    servo_health.detect_series(reader)
+    lift, tilt = servo_health.stop_servos(reader)
     print(f"Boot stop: lift {lift}, tilt torque off confirmed {tilt}")
 finally:
     # Free the pins for code.py.

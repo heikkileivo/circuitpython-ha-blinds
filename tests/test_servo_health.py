@@ -9,7 +9,7 @@ import unittest
 
 from lift_stop import STOP_UNCONFIRMED
 from packet import Address, Instruction, Reader, checksum
-from servo_health import (MoveFigures, ServoRead, boot_reinit, classify, health_message,
+from servo_health import (MoveFigures, ServoRead, boot_reinit, classify, detect_series, health_message,
                           idle_reads, servo_min_voltage, stop_servos)
 
 # Writes a FakeServo can refuse, as (address, data bytes).
@@ -461,3 +461,49 @@ class IdleReadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+STS_REGISTERS = (0, 0, 0, 9, 3)
+
+
+class StsStopTest(unittest.TestCase):
+    """An STS3215's stops write goal speed 0 and torque 1, never torque 2 or
+    128, and never address 48, its torque limit (#139)."""
+
+    def bus(self):
+        return FakeBus(FakeServo(1, registers=STS_REGISTERS, torque=1),
+                       FakeServo(2, registers=STS_REGISTERS, torque=1))
+
+    def test_the_boot_stop_of_an_sts_lift_writes_speed_0_then_torque_1(self):
+        bus = self.bus()
+        reader = Reader(bus)
+        detect_series(reader)
+
+        lift_end, tilt_off = stop_servos(reader)
+
+        self.assertEqual(lift_end, "braked")
+        self.assertTrue(tilt_off)
+        lift_writes = [params for _, scs_id, params in bus.writes() if scs_id == 1]
+        self.assertEqual(lift_writes[0], bytes([Address.GOAL_SPEED_L, 0, 0]))
+        self.assertEqual(lift_writes[-1], bytes([Address.TORQUE_ENABLE, 1]))
+
+    def test_no_stop_writes_torque_2_128_or_address_48_to_an_sts(self):
+        bus = self.bus()
+        reader = Reader(bus)
+        detect_series(reader)
+
+        stop_servos(reader)
+
+        for _, scs_id, params in bus.writes():
+            self.assertNotEqual(params[0], 48)
+            if params[0] == Address.TORQUE_ENABLE:
+                self.assertIn(params[1], (0, 1))
+
+    def test_an_scs_is_still_braked_with_torque_2(self):
+        bus = FakeBus(FakeServo(1), FakeServo(2))
+        reader = Reader(bus)
+        detect_series(reader)
+
+        stop_servos(reader)
+
+        self.assertIn(bytes([Address.TORQUE_ENABLE, 2]), [p for _, i, p in bus.writes() if i == 1])
