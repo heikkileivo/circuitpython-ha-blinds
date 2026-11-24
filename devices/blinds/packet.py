@@ -26,6 +26,8 @@ class Address:
     CCW_DEAD = 27
 
     TORQUE_ENABLE = 40
+    # An STS3215's goal acceleration, in 100 steps/s per s (0 is the fastest).
+    STS_ACCELERATION = 41
     GOAL_POSITION_L = 42
     GOAL_POSITION_H = 43
     GOAL_TIME_L = 44
@@ -33,6 +35,9 @@ class Address:
     GOAL_SPEED_L = 46
     GOAL_SPEED_H = 47
     LOCK = 48
+    # Where an STS3215 keeps its torque limit, in 0.1 % (RAM). On an STS this
+    # is not the LOCK: nothing may write 0 or 1 here as a lock.
+    STS_TORQUE_LIMIT_L = 48
 
     PRESENT_POSITION_L  = 56
     PRESENT_POSITION_H = 57
@@ -216,6 +221,28 @@ class Reader:
         if not self.can_drive(scs_id):
             return None
         return self.write_word(scs_id, Address.GOAL_POSITION_L, position)
+
+    def set_sts_position(self, scs_id, position):
+        """Write an STS tilt's goal position, 0-4095, in position mode. An
+        STS lift is in wheel mode, which has no goal position, and an SCS
+        has set_position(), so only the tilt's caller may use this. Returns
+        the reply's ERROR byte, or None if no good reply came or the servo
+        isn't an STS."""
+        if self.series(scs_id) != "sts":
+            return None
+        return self.write_word(scs_id, Address.GOAL_POSITION_L, position)
+
+    def set_position_profile(self, scs_id, speed, acceleration, torque_limit):
+        """Write an STS tilt's goal speed (steps/s), goal acceleration and
+        torque limit (0.1 %, RAM), which a position move runs at. Returns
+        whether all three writes got a good reply. An SCS has no such
+        profile, so nothing is written."""
+        if self.series(scs_id) != "sts":
+            return None
+        replies = (self.write_byte(scs_id, Address.STS_ACCELERATION, acceleration),
+                   self.write_word(scs_id, Address.GOAL_SPEED_L, speed),
+                   self.write_word(scs_id, Address.STS_TORQUE_LIMIT_L, torque_limit))
+        return all(reply is not None for reply in replies)
 
     def get_time(self, scs_id):
         return self.read_2_bytes(scs_id, Address.GOAL_TIME_L)
