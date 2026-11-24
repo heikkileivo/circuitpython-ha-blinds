@@ -2,7 +2,7 @@ from end_sensors import UP as UP_SENSOR, DOWN as DOWN_SENSOR
 from move_control import MoveControl
 from packet import Address
 from servo_health import MoveFigures
-from tilt import read_at_boot
+from tilt import read_at_boot, to_servo_angle, STS_STEPS_PER_TILT
 import servo_bus
 import servo_health
 import cover_state
@@ -55,6 +55,13 @@ def _encode_duty(value):
 STS_SPEED_PER_DUTY = 2
 STS_MAX_SPEED = 3000
 STS_STEPS_PER_TURN = 4096
+# An STS tilt's position moves: goal speed in steps/s (Middle's slats moved
+# freely at 600 with a load of 4-8 %), goal acceleration, and a torque limit
+# of 30 %, well above that load but far below what could strip the printed
+# parts.
+STS_TILT_SPEED = 600
+STS_TILT_ACCELERATION = 10
+STS_TILT_TORQUE_LIMIT = 300
 
 
 def sts_speed(duty, per_duty=STS_SPEED_PER_DUTY):
@@ -83,6 +90,12 @@ class Servo:
         self._t = 0                 # Previous Temperature
         self._duty = 0              # Duty last commanded
         self._speed_per_duty = env.integer("sts_speed_per_duty", STS_SPEED_PER_DUTY)
+        # An STS tilt's steps per tilt percent, and the speed (steps/s),
+        # acceleration and torque limit (0.1 %) of its position moves.
+        self.sts_tilt_steps = env.integer("sts_tilt_steps", STS_STEPS_PER_TILT)
+        self._sts_tilt_speed = env.integer("sts_tilt_speed", STS_TILT_SPEED)
+        self._sts_tilt_accel = env.integer("sts_tilt_accel", STS_TILT_ACCELERATION)
+        self._sts_tilt_torque = env.integer("sts_tilt_torque", STS_TILT_TORQUE_LIMIT)
         self.move = MoveFigures()   # This move's figures, fed by every sample
 
     @property
@@ -96,8 +109,14 @@ class Servo:
 
     @position.setter
     def position(self, value):
-        pos = int(value * self._scale)
-        self._reader.set_position(self._id, pos)
+        if self._sts:
+            self._reader.set_position_profile(
+                self._id, self._sts_tilt_speed, self._sts_tilt_accel, self._sts_tilt_torque)
+        pos = to_servo_angle(value, self._scale, self._reader.series(self._id), self.sts_tilt_steps)
+        if self._sts:
+            self._reader.set_sts_position(self._id, pos)
+        else:
+            self._reader.set_position(self._id, pos)
 
 
     @property
@@ -373,7 +392,7 @@ class Blinds:
             self._tilt_scale = tilt_scale
             # code.py builds the blind after the boot re-init has stopped
             # the servos, and before the first connect publishes the tilt.
-            self._tilt = read_at_boot(reader, tilt_scale)
+            self._tilt = read_at_boot(reader, tilt_scale, self._tilt_servo.sts_tilt_steps)
             self._speed = env.integer("default_speed", 800)
             self._servo_position = 0
             self._revolutions = 0
