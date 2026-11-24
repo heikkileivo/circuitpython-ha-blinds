@@ -55,13 +55,15 @@ def _encode_duty(value):
 STS_SPEED_PER_DUTY = 2
 STS_MAX_SPEED = 3000
 STS_STEPS_PER_TURN = 4096
-# An STS tilt's position moves: goal speed in steps/s (Middle's slats moved
-# freely at 600 with a load of 4-8 %), goal acceleration, and a torque limit
-# of 30 %, well above that load but far below what could strip the printed
-# parts.
+# An STS tilt's position moves: goal speed in steps/s, goal acceleration, and
+# a torque limit of 50 %. The load while it moves is almost all the gearbox's
+# friction and grows with the speed, the same over the whole swing: about 17 %
+# at 300 steps/s, 29 % at 600 and 42 % at 900 (Middle, #141). So the limit
+# leaves 1.7 times the load at 600, and is still far below what could strip
+# the printed parts.
 STS_TILT_SPEED = 600
 STS_TILT_ACCELERATION = 10
-STS_TILT_TORQUE_LIMIT = 300
+STS_TILT_TORQUE_LIMIT = 500
 
 
 def sts_speed(duty, per_duty=STS_SPEED_PER_DUTY):
