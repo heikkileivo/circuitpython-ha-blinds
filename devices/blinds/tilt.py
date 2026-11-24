@@ -17,6 +17,19 @@ STS_MIDDLE = 2048
 STS_STEPS_PER_TILT = 40
 
 
+# The time a tilt move may take, on an STS, besides the full turn it can move
+# at the tilt speed: the acceleration ramps, and the dead band settling.
+STS_TILT_MARGIN_MS = 1500
+
+
+def sts_deadline_ms(speed):
+    """The deadline for an STS tilt move at speed steps/s: the time a full
+    turn takes, which no move exceeds, and a margin. The SCS's 3 s deadline
+    would cut a 2,000-step move at 600 steps/s short, which turns the torque
+    off mid-move and leaves the cover stopped."""
+    return 4096 * 1000 // speed + STS_TILT_MARGIN_MS
+
+
 def read_at_boot(reader, scale, sts_steps=STS_STEPS_PER_TILT):
     """The tilt the tilt servo is at, read once the boot re-init has
     stopped it. The read is tried up to ATTEMPTS times, like the servo

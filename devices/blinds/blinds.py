@@ -2,7 +2,7 @@ from end_sensors import UP as UP_SENSOR, DOWN as DOWN_SENSOR
 from move_control import MoveControl
 from packet import Address
 from servo_health import MoveFigures
-from tilt import read_at_boot, to_servo_angle, STS_STEPS_PER_TILT
+from tilt import read_at_boot, sts_deadline_ms, to_servo_angle, STS_STEPS_PER_TILT
 import servo_bus
 import servo_health
 import cover_state
@@ -118,6 +118,14 @@ class Servo:
         else:
             self._reader.set_position(self._id, pos)
 
+
+    @property
+    def tilt_deadline_ms(self):
+        """How long a tilt move may take by default: servo_wait's for an SCS,
+        and what its speed takes for an STS."""
+        if self._sts:
+            return sts_deadline_ms(self._sts_tilt_speed)
+        return servo_wait.TILT_DEADLINE_MS
 
     @property
     def has_dead_zone(self):
@@ -462,7 +470,7 @@ class Blinds:
             servo = self._tilt_servo
             servo.enable_torque = True
             servo.position = value
-            deadline_ms = env.integer("tilt_deadline_ms", servo_wait.TILT_DEADLINE_MS)
+            deadline_ms = env.integer("tilt_deadline_ms", servo.tilt_deadline_ms)
             arrived = await servo_wait.until_still(
                 lambda: servo.is_moving, now_ms, deadline_ms,
                 env.integer("tilt_rise_ms", servo_wait.TILT_RISE_MS))

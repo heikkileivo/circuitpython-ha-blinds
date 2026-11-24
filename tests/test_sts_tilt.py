@@ -94,6 +94,24 @@ class DriveTest(unittest.TestCase):
         self.assertIsNone(reader.set_sts_position(TILT_ID, 2048))
 
 
+class DeadlineTest(unittest.TestCase):
+    def test_an_sts_tilt_may_take_as_long_as_a_full_turn_at_its_speed(self):
+        tilt, servo, reader = sts_tilt()
+
+        # 4096 steps at 600 steps/s is 6.8 s, so the SCS's 3 s would cut off
+        # the 2,000-step move from 75 to 25 (3.3 s), as it did on Middle.
+        self.assertGreater(tilt.tilt_deadline_ms, 4096 * 1000 // blinds.STS_TILT_SPEED)
+        self.assertGreater(tilt.tilt_deadline_ms, 2000 * 1000 // blinds.STS_TILT_SPEED + 3000)
+
+    def test_an_scs_tilt_keeps_its_deadline(self):
+        servo = FakeServo(TILT_ID, registers=(0, 0, 0, 5, 0), torque=0)
+        reader = Reader(FakeBus(servo))
+        detect_series(reader)
+
+        self.assertEqual(blinds.Servo(TILT_ID, reader, scale=10.0).tilt_deadline_ms,
+                         blinds.servo_wait.TILT_DEADLINE_MS)
+
+
 class BootReadTest(unittest.TestCase):
     def test_the_boot_tilt_is_the_one_the_sts_is_at(self):
         tilt, servo, reader = sts_tilt(position=2048 + 15 * 40)
