@@ -3,11 +3,22 @@ import reset_cause
 import servo_health
 
 
-def blinds_discovery(device_name, mac=None):
-    """The blinds' HADiscovery, with root availability and every component."""
+def blinds_discovery(device_name, mac=None, sts_tilt=False):
+    """The blinds' HADiscovery, with root availability and every component.
+    sts_tilt: whether the tilt servo is an STS3215, which has a midpoint to
+    calibrate (#141)."""
     disc = HADiscovery(device_name, "CircuitPython Blinds", "blinds", mac=mac,
                        availability=True)
     add_components(disc)
+    if sts_tilt:
+        # Pressed with the slats level, set by the tilt slider: the servo's
+        # position there becomes the tilt's 50.
+        # HA's button sends "PRESS" by default, and has no state topic.
+        disc.add_component("tilt_level", "button", {
+            "name": "Set tilt level here",
+            "entity_category": "config",
+            "command_topic": True,
+        })
     return disc
 
 

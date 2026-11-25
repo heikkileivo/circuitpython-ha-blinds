@@ -7,8 +7,10 @@ from components import blinds_discovery
 MAC = bytes.fromhex("f412fa448000")
 DEVICE_NAME = "Upstairs Living Room Right Blinds"
 
-# The broker takes a 5 KB publish since MiniMQTT 8.1.0; this leaves headroom.
-BUDGET_BYTES = 4096
+# The broker takes a 5 KB publish since MiniMQTT 8.1.0; this leaves about 10 %
+# headroom. It was 4,096 until the STS tilt's calibration button (#141), which
+# only a blind with an STS tilt has.
+BUDGET_BYTES = 4608
 
 
 def blinds_payload():
@@ -85,7 +87,7 @@ class BlindsDiscoveryTest(unittest.TestCase):
     def test_cpu_temperature_is_a_diagnostic_sensor_on_its_own_short_topic(self):
         # The board's own temperature, next to the servos' cavity readings
         # (#125). The key is "cpu_temp", not "cpu_temperature": the payload
-        # has about 30 bytes left against BUDGET_BYTES.
+        # had about 30 bytes left against the old 4,096-byte budget.
         cpu = json.loads(blinds_payload())["cmps"]["blinds_f412fa448000_cpu_temp"]
 
         self.assertEqual(cpu["p"], "sensor")

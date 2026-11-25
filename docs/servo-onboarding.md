@@ -1,12 +1,12 @@
 # Onboarding a servo
 
-How to put a new SCS servo into a blind as its lift or its tilt, without editing code (#99).
+How to put a new SCS or STS3215 servo into a blind as its lift or its tilt, without editing code (#99).
 
 A new servo arrives at its factory settings: ID 1, at 1 Mbps. The blind talks to its servos at 250,000 baud, with the lift at ID 1 and the tilt at ID 2. Until onboarding writes those settings into the servo, the blind can't talk to it, so nothing can stop it. That includes `boot.py`, `safemode.py` and the stall stop.
 
 `tools/onboard.py` does the onboarding over the web-workflow serial websocket, and asks you to do each manual step. On the blind, it runs the `onboard` module. That module ships with the firmware but never runs at boot.
 
-**Not supported yet:** STS3215 servos. The tool refuses one until #100 lands.
+**STS3215 servos (#100)** are onboarded the same way. The tool knows them by their model number (registers 3–4 read 9, 3) and writes what their register layout needs: little-endian words, `LOCK` at 55 (address 48 is their torque limit, which nothing writes), and a `MODE` register. A blind may mix the series, such as an STS tilt with an SCS lift.
 
 ## Before
 
@@ -31,17 +31,18 @@ The tool prints each step's result and waits at each of your steps:
 2. **You connect only the new servo.** Unplug the other servo and the old one, and plug in the new one, then press Enter.
 3. **It onboards the servo.** It scans every ID at every baud rate, and goes on only if exactly one servo answered and nothing came back garbled. It prints what answered and the servo's registers 0–4, then writes the settings, reading each one back:
    1. `LOCK=0`
-   2. the role's angle limits: lift 0/0 (wheel mode), tilt 10/1000
-   3. the role's ID: lift 1, tilt 2
-   4. baud rate 250,000
-   5. everything read back at the new ID and rate
-   6. `LOCK=1`
+   2. the role's angle limits: SCS lift 0/0 (wheel mode), SCS tilt 10/1000, STS 0/4095 for both
+   3. an STS's mode: lift 1 (wheel), tilt 0 (position)
+   4. the role's ID: lift 1, tilt 2
+   5. baud rate 250,000
+   6. everything read back at the new ID and rate
+   7. `LOCK=1`
 4. **You power-cycle the new servo.** Unplug it, plug it back in, then press Enter. The tool rescans and checks the settings survived.
 5. **For a lift, it marks the stored travel unknown.** The spindle came out, so the travel is stale. The full travel and the cover state stay as they were.
-6. **You plug the other servo back in,** then press Enter. The tool checks that exactly IDs 1 and 2 answer, at 250,000 baud, each with its role's angle limits.
+6. **You plug the other servo back in,** then press Enter. The tool checks that exactly IDs 1 and 2 answer, at 250,000 baud, each with its role's angle limits, and an STS also its role's mode.
 7. **It soft-reboots the blind** and prints `PASS`.
 
-**If a step fails,** the tool prints `FAIL` and why, then stops. A step fails on a refusal (two servos, a garbled reply, an STS3215), a setting that didn't read back or didn't survive the power cycle, a traceback on the blind, or no reply in time.
+**If a step fails,** the tool prints `FAIL` and why, then stops. A step fails on a refusal (two servos, a garbled reply), a setting that didn't read back or didn't survive the power cycle, a traceback on the blind, or no reply in time.
 - The blind stays at the REPL. It doesn't reboot into settings nobody verified.
 - **To recover, run the tool again.** Its scan finds the servo wherever the last run left it.
 - To get the blind running without onboarding, once its servos are right: `python3 tools/repl.py <device-name> --reload`, or power-cycle it.

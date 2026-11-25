@@ -190,7 +190,8 @@ def main():
                                        "such as upstairs-living-room-middle-blinds")
     parser.add_argument("role", choices=("lift", "tilt"),
                         help="the new servo's role: lift (ID 1, wheel mode) or tilt "
-                             "(ID 2, angle limits 10-1000)")
+                             "(ID 2; an SCS gets angle limits 10-1000, an STS "
+                             "position mode)")
     args = parser.parse_args()
     dev = device(args.device)
     try:

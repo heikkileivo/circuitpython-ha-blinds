@@ -162,19 +162,26 @@ class FakeServo:
                  status=0, error=0, ignored_writes=0, missed_pings=0,
                  answers=True, refuses=(), baud_code=2, angle_limits=(0, 0),
                  registers=(3, 25, 1, 9, 15), lock=0, volatile=(), garbles=False,
-                 busy_after_eeprom_write=0):
+                 busy_after_eeprom_write=0, mode=0):
         self.memory = bytearray(Address.PRESENT_CURRENT_H + 1)
         self.memory[0:5] = bytes(registers)
+        # An STS3215 (model 777 at registers 3-4) keeps its words little-endian,
+        # its LOCK at 55 (48 is its torque limit), and its MODE at 33.
+        self.sts = tuple(registers[3:5]) == (9, 3)
         self.memory[Address.ID] = scs_id
         self.memory[Address.BAUD_RATE] = baud_code
-        # Words are big-endian: the high byte sits at the _L address.
-        self.memory[Address.MIN_ANGLE_LIMIT_L:Address.MAX_ANGLE_LIMIT_H + 1] = bytes(
-            (angle_limits[0] >> 8, angle_limits[0] & 0xFF,
-             angle_limits[1] >> 8, angle_limits[1] & 0xFF))
+        # An SCS's words are big-endian: the high byte sits at the _L address.
+        low, high = (1, 0) if self.sts else (0, 1)
+        for address, value in ((Address.MIN_ANGLE_LIMIT_L, angle_limits[0]),
+                               (Address.MAX_ANGLE_LIMIT_L, angle_limits[1])):
+            self.memory[address + high] = value & 0xFF
+            self.memory[address + low] = value >> 8
+        if self.sts:
+            self.memory[Address.STS_MODE] = mode
         self.memory[Address.GOAL_TIME_L] = duty >> 8
         self.memory[Address.GOAL_TIME_H] = duty & 0xFF
         self.memory[Address.TORQUE_ENABLE] = torque
-        self.memory[Address.LOCK] = lock
+        self.memory[self.lock_address] = lock
         self.memory[Address.PRESENT_VOLTAGE] = voltage
         self.memory[Address.PRESENT_TEMPERATURE] = temperature
         self.memory[Address.STATUS] = status
@@ -199,14 +206,26 @@ class FakeServo:
         return FEETECH_BAUD_RATES[self.memory[Address.BAUD_RATE]]
 
     @property
+    def lock_address(self):
+        return 55 if self.sts else Address.LOCK
+
+    @property
+    def mode(self):
+        """An STS's MODE register: 0 position, 1 wheel."""
+        return self.memory[Address.STS_MODE]
+
+    @property
     def angle_limits(self):
         m = self.memory
+        if self.sts:
+            return ((m[Address.MIN_ANGLE_LIMIT_H] << 8) | m[Address.MIN_ANGLE_LIMIT_L],
+                    (m[Address.MAX_ANGLE_LIMIT_H] << 8) | m[Address.MAX_ANGLE_LIMIT_L])
         return ((m[Address.MIN_ANGLE_LIMIT_L] << 8) | m[Address.MIN_ANGLE_LIMIT_H],
                 (m[Address.MAX_ANGLE_LIMIT_L] << 8) | m[Address.MAX_ANGLE_LIMIT_H])
 
     @property
     def lock(self):
-        return self.memory[Address.LOCK]
+        return self.memory[self.lock_address]
 
     @property
     def duty(self):
@@ -217,7 +236,13 @@ class FakeServo:
         return self.memory[Address.TORQUE_ENABLE]
 
     def write(self, address, data):
-        """A WRITE's bytes, stored as the servo stores them."""
+        """A WRITE's bytes, stored as the servo stores them. An STS's 128 to
+        torque enable isn't stored: it makes the present position 2048."""
+        if self.sts and address == Address.TORQUE_ENABLE and data[0] == 128:
+            self.memory[Address.TORQUE_ENABLE] = 0
+            self.memory[Address.PRESENT_POSITION_L] = 2048 & 0xFF
+            self.memory[Address.PRESENT_POSITION_H] = 2048 >> 8
+            return
         self.memory[address:address + len(data)] = data
         if address < len(self.eeprom):
             self.busy = self.busy_after_eeprom_write
@@ -229,7 +254,7 @@ class FakeServo:
     def power_cycle(self):
         """Unplugged and plugged back in: the EEPROM and LOCK reload."""
         self.memory[:len(self.eeprom)] = self.eeprom
-        self.memory[Address.LOCK] = self.lock_at_power_up
+        self.memory[self.lock_address] = self.lock_at_power_up
 
 
 class FakeBus:

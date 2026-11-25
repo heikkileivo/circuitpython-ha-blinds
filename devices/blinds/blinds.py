@@ -2,7 +2,7 @@ from end_sensors import UP as UP_SENSOR, DOWN as DOWN_SENSOR
 from move_control import MoveControl
 from packet import Address
 from servo_health import MoveFigures
-from tilt import read_at_boot, sts_deadline_ms, to_servo_angle, STS_STEPS_PER_TILT
+from tilt import read_at_boot, sts_deadline_ms, to_servo_angle, STS_MIDDLE, STS_STEPS_PER_TILT
 import servo_bus
 import servo_health
 import cover_state
@@ -55,6 +55,12 @@ def _encode_duty(value):
 STS_SPEED_PER_DUTY = 2
 STS_MAX_SPEED = 3000
 STS_STEPS_PER_TURN = 4096
+# Written to an STS's torque enable, 128 makes its present position 2048
+# (the offset register, in EEPROM, takes the difference). The servo sends no
+# reply to it, so the position read back says whether it worked.
+STS_TORQUE_CALIBRATE = 128
+STS_CALIBRATE_SETTLE_S = 0.3
+STS_CALIBRATE_TOLERANCE = 8
 # An STS tilt's position moves: goal speed in steps/s (Middle's slats moved
 # freely at 600 with a load of 4-8 %), goal acceleration, and a torque limit
 # of 30 %, well above that load but far below what could strip the printed
@@ -299,6 +305,19 @@ class Servo:
         confirmed off."""
         return servo_health.torque_off(self._reader, self._id)
 
+    async def set_midpoint(self):
+        """Make the servo's present position its midpoint, 2048, with the
+        torque off: a write of 128 to torque enable. An STS only. Returns
+        whether the position reads 2048, within STS_CALIBRATE_TOLERANCE,
+        afterwards."""
+        if not self._sts or not self.torque_off():
+            return False
+        self._reader.write_byte(self._id, Address.TORQUE_ENABLE, STS_TORQUE_CALIBRATE)
+        await asyncio.sleep(STS_CALIBRATE_SETTLE_S)
+        angle = servo_health.first_reply(
+            lambda: self._reader.read_2_bytes(self._id, Address.PRESENT_POSITION_L))
+        return angle is not None and abs(angle - STS_MIDDLE) <= STS_CALIBRATE_TOLERANCE
+
     def __repr__(self):
         return f"Motor {self._id}: Pos: {self._pos} V: {self._v} I: {self._i} L: {self._l} U: {self._u} T: {self._t}"
 
@@ -428,6 +447,24 @@ class Blinds:
                 # Not closed, the tilt is the next close's target, and no
                 # servo drives to it now. Publish it at once.
                 self.report_state()
+
+        async def set_tilt_level(self):
+            """Take the tilt servo's present position, with the slats level,
+            as the tilt's 50: its midpoint, which the servo keeps itself. Not
+            while a move is under way, and an STS tilt only. Publishes the
+            tilt, 50, once the position reads as the midpoint. Returns
+            whether it did."""
+            if self.in_move:
+                print("Not setting the tilt level during a move.")
+                return False
+            if not await self._tilt_servo.set_midpoint():
+                print("Failed to set the tilt level: the tilt servo's position didn't "
+                      + "read as its midpoint.")
+                return False
+            print("The tilt servo's position is now its midpoint, the tilt 50.")
+            self._tilt = 50
+            self.report_state()
+            return True
 
         async def _tilt_only(self, value):
             """A tilt-only move to value, which publishes the state once it
