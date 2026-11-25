@@ -24,6 +24,8 @@ class Address:
     MAX_ANGLE_LIMIT_H = 12
     CW_DEAD = 26
     CCW_DEAD = 27
+    # An STS3215's operating mode (EEPROM): 0 is position, 1 is wheel.
+    STS_MODE = 33
 
     TORQUE_ENABLE = 40
     # An STS3215's goal acceleration, in 100 steps/s per s (0 is the fastest).

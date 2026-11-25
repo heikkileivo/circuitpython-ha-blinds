@@ -34,11 +34,9 @@ BAUD_RATES = (1000000, 500000, 250000, 128000, 115200, 76800, 57600, 38400)
 # Every ID a servo can have: 254 is the broadcast ID.
 IDS = range(254)
 
-# Each role's ID and angle limits, min and max. The lift runs in wheel mode,
-# which limits of 0/0 select. The tilt couldn't reach the bottom of its range
-# at the SCS15's factory 20/1003.
-ROLES = {"lift": (servo_bus.LIFT_ID, (0, 0)),
-         "tilt": (servo_bus.TILT_ID, (10, 1000))}
+# Each role's ID. The angle limits and the STS's mode a role is set up with
+# are in the series' tables below.
+ROLES = {"lift": servo_bus.LIFT_ID, "tilt": servo_bus.TILT_ID}
 
 
 def _big_endian(value):
@@ -49,16 +47,40 @@ def _from_big_endian(data):
     return (data[0] << 8) | data[1]
 
 
-# Where each series keeps what onboarding writes, and how it encodes a word,
-# by the series' name. STS joins with #100: its LOCK isn't at 48, which is
-# its torque limit.
+def _little_endian(value):
+    return [value & 0xFF, value >> 8]
+
+
+def _from_little_endian(data):
+    return data[0] | (data[1] << 8)
+
+
+# Where each series keeps what onboarding writes, how it encodes a word, and
+# what each role is set up with, by the series' name. An SCS lift runs in
+# wheel mode, which angle limits of 0/0 select, and its tilt couldn't reach
+# the bottom of its range at the SCS15's factory 20/1003. An STS has a MODE
+# register (0 position, 1 wheel) and keeps its factory limits of 0/4095, which
+# the lift's wheel mode ignores. Its LOCK isn't at 48, which is its torque
+# limit, so nothing writes there.
 SERIES = {"scs": {"id": Address.ID,
                   "baud_rate": Address.BAUD_RATE,
                   "angle_limits": Address.MIN_ANGLE_LIMIT_L,
                   "lock": Address.LOCK,
                   "baud_rates": BAUD_RATES,
                   "encode": _big_endian,
-                  "decode": _from_big_endian}}
+                  "decode": _from_big_endian,
+                  "limits": {"lift": (0, 0), "tilt": (10, 1000)},
+                  "mode": None},
+          "sts": {"id": Address.ID,
+                  "baud_rate": Address.BAUD_RATE,
+                  "angle_limits": Address.MIN_ANGLE_LIMIT_L,
+                  "lock": 55,
+                  "baud_rates": BAUD_RATES,
+                  "encode": _little_endian,
+                  "decode": _from_little_endian,
+                  "limits": {"lift": (0, 4095), "tilt": (0, 4095)},
+                  "mode": Address.STS_MODE,
+                  "modes": {"lift": 1, "tilt": 0}}}
 
 # Registers 3-4 of an STS3215: model number 777, little-endian. Registers 0-4
 # don't name an SCS model, so anything else is taken as an SCS.
@@ -128,14 +150,19 @@ class Onboarding:
         rate, with its role's angle limits."""
         if role not in ROLES:
             return self._mark("role", False, role=role)
-        role_id, limits = ROLES[role]
+        role_id = ROLES[role]
         found, garbled = self._scan()
-        read = None
+        read, mode, expected, expected_mode = None, None, None, None
         if found == [{"baud_rate": servo_bus.BAUD_RATE, "id": role_id}] and not garbled:
             _, _, table = self._read_series(role_id)
             read = self._read_limits(role_id, table)
-        return self._mark("verify", read == list(limits), found=found, garbled=garbled,
-                          angle_limits=read)
+            if table is not None:
+                expected = list(table["limits"][role])
+                mode = self._read_mode(role_id, table)
+                expected_mode = self._mode_for(table, role)
+        values = {} if expected_mode is None else {"mode": mode}
+        return self._mark("verify", read is not None and read == expected and mode == expected_mode,
+                          found=found, garbled=garbled, angle_limits=read, **values)
 
     def forget_travel(self, role):
         """Mark the stored travel unknown after a lift onboarding, keeping the
@@ -160,8 +187,8 @@ class Onboarding:
     def bus_check(self):
         """After the operator has plugged the other servo back in: rescan.
         Goes through if exactly the lift and the tilt answer, at their IDs
-        and the bus rate. Where both are SCS, each must also have its role's
-        angle limits."""
+        and the bus rate, each with its role's angle limits, and an STS also
+        its role's mode."""
         found, garbled = self._scan()
         ok = not garbled and found == [
             {"baud_rate": servo_bus.BAUD_RATE, "id": servo_bus.LIFT_ID},
@@ -169,12 +196,13 @@ class Onboarding:
         limits = None
         if ok:
             # (registers, series name, table) by role.
-            servos = {role: self._read_series(ROLES[role][0]) for role in ROLES}
-            ok = all(servo[0] is not None for servo in servos.values())
-            if all(servo[1] == "scs" for servo in servos.values()):
-                limits = {role: self._read_limits(ROLES[role][0], servos[role][2])
-                          for role in ROLES}
-                ok = ok and all(limits[role] == list(ROLES[role][1]) for role in ROLES)
+            servos = {role: self._read_series(ROLES[role]) for role in ROLES}
+            ok = all(servo[0] is not None and servo[2] is not None for servo in servos.values())
+            if ok:
+                limits = {role: self._read_limits(ROLES[role], servos[role][2]) for role in ROLES}
+                ok = all(limits[role] == list(servos[role][2]["limits"][role]) for role in ROLES)
+                ok = ok and all(self._read_mode(ROLES[role], servos[role][2])
+                                == self._mode_for(servos[role][2], role) for role in ROLES)
         return self._mark("bus_check", ok, found=found, garbled=garbled, angle_limits=limits)
 
     def _identify(self):
@@ -197,10 +225,11 @@ class Onboarding:
 
     def _write(self, role, table):
         """Write role's settings into the found servo, reading each back
-        before the next: LOCK=0, the angle limits, the ID, the baud rate,
-        all of them again, then LOCK=1. Goes through if every one read back
+        before the next: LOCK=0, the angle limits, an STS's mode, the ID, the
+        baud rate, all of them again, then LOCK=1. Goes through if every one read back
         as written."""
-        new_id, limits = ROLES[role]
+        new_id, limits = ROLES[role], table["limits"][role]
+        mode = self._mode_for(table, role)
         encode, decode = table["encode"], table["decode"]
         write = self._reader.write_mem
 
@@ -213,6 +242,12 @@ class Onboarding:
         read = self._read_limits(self._id, table)
         if not self._mark("angle_limits", read == list(limits), angle_limits=read):
             return False
+
+        if mode is not None:
+            write(self._id, table["mode"], [mode])
+            read_mode = self._read_byte(self._id, table["mode"])
+            if not self._mark("mode", read_mode == mode, mode=read_mode):
+                return False
 
         # From here on, the servo answers at its role's ID. Its reply to the
         # write may come from either ID, so the read back decides.
@@ -238,9 +273,12 @@ class Onboarding:
         read_id = self._read_byte(new_id, table["id"])
         read_code = self._read_byte(new_id, table["baud_rate"])
         read = self._read_limits(new_id, table)
-        if not self._mark("read_back", (read_id, read_code, read) == (new_id, code, list(limits)),
+        read_mode = None if mode is None else self._read_byte(new_id, table["mode"])
+        values = {} if mode is None else {"mode": read_mode}
+        if not self._mark("read_back",
+                          (read_id, read_code, read, read_mode) == (new_id, code, list(limits), mode),
                           id=read_id, baud_rate=self._baud_rate(table, read_code),
-                          angle_limits=read):
+                          angle_limits=read, **values):
             return False
 
         write(new_id, table["lock"], [1])
@@ -286,6 +324,17 @@ class Onboarding:
         data = self._read(scs_id, table["angle_limits"], 4)
         return None if data is None else [table["decode"](data[0:2]),
                                           table["decode"](data[2:4])]
+
+    @staticmethod
+    def _mode_for(table, role):
+        """The mode an STS is set up with for role, or None for a series
+        without a MODE register."""
+        return None if table["mode"] is None else table["modes"][role]
+
+    def _read_mode(self, scs_id, table):
+        """The STS's mode, or None if the series has no MODE register or no
+        good reply came."""
+        return None if table["mode"] is None else self._read_byte(scs_id, table["mode"])
 
     @staticmethod
     def _baud_rate(table, code):

@@ -28,6 +28,18 @@ def factory_servo(**changes):
     return FakeServo(1, **settings)
 
 
+# Registers 0-4 of an STS3215, whose model number 777 reads 9, 3.
+STS_REGISTERS = (3, 10, 0, 9, 3)
+
+
+def factory_sts(**changes):
+    """A factory STS3215 (#139): ID 1 at 1 Mbps, in position mode, with the
+    angle limits 0/4095, locked."""
+    settings = dict(baud_code=0, angle_limits=(0, 4095), lock=1, registers=STS_REGISTERS, mode=0)
+    settings.update(changes)
+    return FakeServo(1, **settings)
+
+
 class Run:
     """An Onboarding on a fake bus, with the marker lines it printed."""
 
@@ -104,6 +116,74 @@ class OnboardTest(unittest.TestCase):
             "step": "identify", "ok": True, "registers": [0, 4, 1, 5, 15], "series": "scs"})
 
 
+class StsOnboardTest(unittest.TestCase):
+    def test_a_factory_sts_onboarded_as_the_lift_ends_at_id_1_250000_and_wheel_mode(self):
+        servo = factory_sts()
+        run = Run(servo)
+
+        self.assertTrue(run.onboarding.onboard("lift"))
+
+        self.assertEqual((servo.id, servo.baud_rate, servo.mode, servo.angle_limits),
+                         (1, 250000, 1, (0, 4095)))
+        self.assertEqual(servo.lock, 1)
+        self.assertEqual([m["step"] for m in run.markers()],
+                         ["scan", "identify", "lock_off", "angle_limits", "mode", "id",
+                          "baud_rate", "read_back", "lock_on"])
+        self.assertTrue(all(m["ok"] for m in run.markers()))
+        self.assertEqual(run.marker("identify")["series"], "sts")
+
+    def test_a_factory_sts_onboarded_as_the_tilt_ends_at_id_2_250000_and_position_mode(self):
+        servo = factory_sts()
+        run = Run(servo)
+
+        self.assertTrue(run.onboarding.onboard("tilt"))
+
+        self.assertEqual((servo.id, servo.baud_rate, servo.mode, servo.angle_limits),
+                         (2, 250000, 0, (0, 4095)))
+        self.assertEqual(run.marker("read_back"), {
+            "step": "read_back", "ok": True, "id": 2, "baud_rate": 250000,
+            "angle_limits": [0, 4095], "mode": 0})
+
+    def test_a_factory_sts_in_wheel_mode_onboarded_as_the_tilt_is_put_in_position_mode(self):
+        servo = factory_sts(mode=1)
+
+        self.assertTrue(Run(servo).onboarding.onboard("tilt"))
+
+        self.assertEqual(servo.mode, 0)
+
+    def test_an_sts_never_gets_a_write_to_address_48_but_its_lock_is_at_55(self):
+        # 48 is its torque limit: a lock write there would zero it.
+        for role in ("lift", "tilt"):
+            with self.subTest(role=role):
+                servo = factory_sts()
+                run = Run(servo)
+
+                run.onboarding.onboard(role)
+
+                written = [params[0] for _, _, params in run.bus.writes()]
+                self.assertNotIn(Address.LOCK, written)
+                self.assertIn(55, written)
+
+    def test_the_settings_survive_a_power_cycle(self):
+        servo = factory_sts()
+        Run(servo).onboarding.onboard("lift")
+
+        servo.power_cycle()
+
+        self.assertEqual((servo.id, servo.baud_rate, servo.mode, servo.angle_limits),
+                         (1, 250000, 1, (0, 4095)))
+
+    def test_a_mode_that_doesnt_read_back_stops_the_onboarding_there(self):
+        servo = factory_sts(refuses=((Address.STS_MODE, b"\x01"),))
+        run = Run(servo)
+
+        self.assertFalse(run.onboarding.onboard("lift"))
+
+        self.assertEqual(run.markers()[-1]["step"], "mode")
+        self.assertEqual(servo.id, 1)
+        self.assertEqual(servo.baud_rate, 1000000)
+
+
 class RefusalTest(unittest.TestCase):
     def assert_refused_with_no_writes(self, run, role="lift"):
         self.assertFalse(run.onboarding.onboard(role))
@@ -131,13 +211,10 @@ class RefusalTest(unittest.TestCase):
         self.assert_refused_with_no_writes(run)
         self.assertEqual(run.marker("scan")["found"], [])
 
-    def test_an_sts3215_is_refused_as_unsupported(self):
-        # Its model number, 777, reads 9, 3 at registers 3-4.
-        run = Run(factory_servo(registers=(3, 9, 0, 9, 3)))
+    def test_an_sts_and_an_scs_on_the_bus_together_are_refused(self):
+        run = Run(factory_sts(), FakeServo(2))
 
         self.assert_refused_with_no_writes(run)
-        self.assertEqual(run.marker("identify"), {
-            "step": "identify", "ok": False, "registers": [3, 9, 0, 9, 3], "series": "sts"})
 
     def test_a_role_that_isnt_lift_or_tilt_is_refused_before_the_scan(self):
         run = Run(factory_servo())
@@ -241,6 +318,30 @@ class VerifyTest(unittest.TestCase):
 
         self.assertFalse(run.onboarding.verify("lift"))
 
+    def test_an_sts_keeps_its_mode_and_limits_through_a_power_cycle(self):
+        servo = factory_sts()
+        Run(servo).onboarding.onboard("lift")
+        servo.power_cycle()
+        run = Run(servo)
+
+        self.assertTrue(run.onboarding.verify("lift"))
+
+        self.assertEqual(run.marker("verify"), {
+            "step": "verify", "ok": True, "found": [{"baud_rate": 250000, "id": 1}],
+            "garbled": [], "angle_limits": [0, 4095], "mode": 1})
+
+    def test_an_sts_fails_when_its_mode_didnt_persist(self):
+        servo = factory_sts()
+        Run(servo).onboarding.onboard("lift")
+        servo.volatile = (Address.STS_MODE,)
+        servo.eeprom[Address.STS_MODE] = 0
+        servo.power_cycle()
+        run = Run(servo)
+
+        self.assertFalse(run.onboarding.verify("lift"))
+
+        self.assertEqual(run.marker("verify")["mode"], 0)
+
 
 class ForgetTravelTest(unittest.TestCase):
     RECORD = persist.encode(cover_state.DOWN, 3.5, 12.25)
@@ -330,13 +431,28 @@ class BusCheckTest(unittest.TestCase):
         self.assertEqual(run.marker("bus_check")["angle_limits"],
                          {"lift": [0, 0], "tilt": [20, 1003]})
 
-    def test_the_limits_are_left_unchecked_unless_both_are_scs(self):
-        sts_tilt = FakeServo(2, angle_limits=(0, 4095), registers=(3, 9, 0, 9, 3))
-        run = Run(FakeServo(1), sts_tilt)
+    def test_it_passes_with_an_sts_lift_and_tilt_in_their_modes(self):
+        lift = FakeServo(1, registers=STS_REGISTERS, angle_limits=(0, 4095), mode=1)
+        tilt = FakeServo(2, registers=STS_REGISTERS, angle_limits=(0, 4095), mode=0)
+        run = Run(lift, tilt)
 
         self.assertTrue(run.onboarding.bus_check())
 
-        self.assertIsNone(run.marker("bus_check")["angle_limits"])
+        self.assertEqual(run.marker("bus_check")["angle_limits"],
+                         {"lift": [0, 4095], "tilt": [0, 4095]})
+
+    def test_it_fails_when_an_sts_is_in_the_wrong_mode_for_its_role(self):
+        # The lift left in position mode, where it would never drive.
+        lift = FakeServo(1, registers=STS_REGISTERS, angle_limits=(0, 4095), mode=0)
+        tilt = FakeServo(2, registers=STS_REGISTERS, angle_limits=(0, 4095), mode=0)
+
+        self.assertFalse(Run(lift, tilt).onboarding.bus_check())
+
+    def test_it_passes_with_an_sts_tilt_and_an_scs_lift(self):
+        # Middle's tilt, before its lift moves to an STS too.
+        tilt = FakeServo(2, registers=STS_REGISTERS, angle_limits=(0, 4095), mode=0)
+
+        self.assertTrue(Run(FakeServo(1), tilt).onboarding.bus_check())
 
 
 class CloseTest(unittest.TestCase):
