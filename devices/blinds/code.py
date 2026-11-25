@@ -366,7 +366,7 @@ async def run_blind(reader, end_sensors):
     device_name = env.text("device_name", "Blinds")
     tilt_scale = env.number("tilt_scale", 10.0)
 
-    disc = blinds_discovery(device_name)
+    disc = blinds_discovery(device_name, sts_tilt=reader.series(servo_bus.TILT_ID) == "sts")
 
     def state_messages(blinds):
         """The cover, tilt and speed state as (topic, value) pairs. It's
@@ -419,6 +419,9 @@ async def run_blind(reader, end_sensors):
                 blinds.tilt = tilt
             except Exception as e:
                 print(f"Failed to parse tilt: {e!r}")
+        elif topic == disc.topic("tilt_level", "set"):
+            if message == "PRESS":
+                asyncio.create_task(blinds.set_tilt_level())
 
     socket_timeout = env.number("mqtt_socket_timeout", 0.25)
     mqtt = Mqtt(on_connect_callback=on_connect,

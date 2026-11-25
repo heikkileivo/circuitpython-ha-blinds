@@ -38,8 +38,8 @@ class HADiscovery:
             "p": platform,
             "unique_id": uid,
         }
-        # Auto-fill state_topic unless explicitly provided
-        if "state_topic" not in config:
+        # Auto-fill state_topic unless explicitly provided. A button has none.
+        if "state_topic" not in config and platform != "button":
             entry["state_topic"] = self.topic(key, "state")
         # Handle command_topic: True means auto-generate
         if config.get("command_topic") is True:

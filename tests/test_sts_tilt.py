@@ -3,6 +3,8 @@
 boot read. Run on the fake servo bus, with the device-only modules stubbed
 so blinds.py imports on the host."""
 
+import asyncio
+import json
 import sys
 import types
 import unittest
@@ -10,6 +12,8 @@ import unittest
 sys.modules.setdefault("microcontroller", types.SimpleNamespace(nvm=bytearray(256)))
 
 import blinds
+from components import blinds_discovery
+from tests.test_blinds_discovery import BUDGET_BYTES
 from packet import Address, Reader
 from servo_bus import TILT_ID
 from servo_health import detect_series
@@ -110,6 +114,70 @@ class DeadlineTest(unittest.TestCase):
 
         self.assertEqual(blinds.Servo(TILT_ID, reader, scale=10.0).tilt_deadline_ms,
                          blinds.servo_wait.TILT_DEADLINE_MS)
+
+
+class MidpointTest(unittest.TestCase):
+    def test_the_present_position_becomes_the_midpoint(self):
+        tilt, servo, reader = sts_tilt(position=3000)
+
+        self.assertTrue(asyncio.run(tilt.set_midpoint()))
+
+        self.assertEqual(word(servo, Address.PRESENT_POSITION_L), STS_MIDDLE)
+        self.assertEqual(servo.torque, 0)
+
+    def test_the_torque_goes_off_before_the_128_is_written(self):
+        tilt, servo, reader = sts_tilt(position=3000)
+        servo.memory[Address.TORQUE_ENABLE] = 1
+        bus = reader.uart
+
+        asyncio.run(tilt.set_midpoint())
+
+        torque_writes = [params[1] for _, _, params in bus.writes()
+                         if params[0] == Address.TORQUE_ENABLE]
+        self.assertEqual(torque_writes[:2], [0, blinds.STS_TORQUE_CALIBRATE])
+
+    def test_a_position_that_doesnt_read_as_the_midpoint_fails(self):
+        tilt, servo, reader = sts_tilt(position=3000)
+        # A servo that ignores the 128.
+        servo.refuses = ((Address.TORQUE_ENABLE, bytes((128,))),)
+
+        self.assertFalse(asyncio.run(tilt.set_midpoint()))
+
+    def test_nothing_is_written_to_an_scs_tilt(self):
+        servo = FakeServo(TILT_ID, registers=(0, 0, 0, 5, 0), torque=0)
+        bus = FakeBus(servo)
+        reader = Reader(bus)
+        detect_series(reader)
+        tilt = blinds.Servo(TILT_ID, reader, scale=10.0)
+        bus.requests.clear()
+
+        self.assertFalse(asyncio.run(tilt.set_midpoint()))
+
+        self.assertEqual(bus.writes(), [])
+
+
+class DiscoveryTest(unittest.TestCase):
+    def components(self, **kwargs):
+        return json.loads(blinds_discovery("Middle", mac=bytes(6), **kwargs)
+                          .discovery_payload_json())["cmps"]
+
+    def test_an_sts_tilt_has_a_button_that_sets_the_level(self):
+        (button,) = [c for c in self.components(sts_tilt=True).values() if c["p"] == "button"]
+
+        self.assertEqual(button["name"], "Set tilt level here")
+        self.assertEqual(button["entity_category"], "config")
+        # A button has no state topic, and HA's default payload is "PRESS".
+        self.assertNotIn("state_topic", button)
+        self.assertTrue(button["command_topic"].endswith("/tilt_level/set"))
+
+    def test_an_scs_tilt_has_no_such_button(self):
+        self.assertEqual([c for c in self.components().values() if c["p"] == "button"], [])
+
+    def test_the_payload_still_fits_the_budget(self):
+        payload = blinds_discovery("Upstairs Living Room Right Blinds", mac=bytes(6),
+                                   sts_tilt=True).discovery_payload_json()
+
+        self.assertLessEqual(len(payload.encode("utf-8")), BUDGET_BYTES)
 
 
 class BootReadTest(unittest.TestCase):

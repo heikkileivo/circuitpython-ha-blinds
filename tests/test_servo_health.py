@@ -236,7 +236,13 @@ class FakeServo:
         return self.memory[Address.TORQUE_ENABLE]
 
     def write(self, address, data):
-        """A WRITE's bytes, stored as the servo stores them."""
+        """A WRITE's bytes, stored as the servo stores them. An STS's 128 to
+        torque enable isn't stored: it makes the present position 2048."""
+        if self.sts and address == Address.TORQUE_ENABLE and data[0] == 128:
+            self.memory[Address.TORQUE_ENABLE] = 0
+            self.memory[Address.PRESENT_POSITION_L] = 2048 & 0xFF
+            self.memory[Address.PRESENT_POSITION_H] = 2048 >> 8
+            return
         self.memory[address:address + len(data)] = data
         if address < len(self.eeprom):
             self.busy = self.busy_after_eeprom_write
